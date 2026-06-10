@@ -1,8 +1,10 @@
 """Telegram bot handlers — commands, text messages, photo messages."""
 
+import asyncio
 import logging
 
 from aiogram import Bot, F, Router
+from aiogram.enums import ChatAction
 from aiogram.types import Message
 from aiogram.filters import Command, CommandStart
 
@@ -57,21 +59,69 @@ HELP_TEXT = """Как это работает:
 UNKNOWN_TEXT = """Я не совсем понял. Расскажи, что ты съел, или напиши /help, чтобы посмотреть примеры."""
 
 
+async def send_animated(message: Message, text: str, chunk_delay: float = 0.08) -> None:
+    """Send a message with progressive text-reveal animation.
+
+    Splits text into chunks of 1-3 words and edits the message
+    to simulate streaming/typing effect.
+
+    Args:
+        message: The incoming Telegram message (used for reply context).
+        text: The full response text to reveal.
+        chunk_delay: Seconds between each chunk reveal. Default 0.08s.
+    """
+    words = text.split()
+    if len(words) <= 6:
+        # Short message — just send at once
+        await message.answer(text)
+        return
+
+    # Split into chunks of 2-3 words for smooth reveal
+    chunk_size = 3
+    chunks: list[str] = []
+    for i in range(0, len(words), chunk_size):
+        chunk = " ".join(words[i : i + chunk_size])
+        if i == 0:
+            chunks.append(chunk)
+        else:
+            chunks.append(chunks[-1] + " " + chunk)
+
+    # Send first chunk as placeholder
+    sent_msg = await message.answer(chunks[0] + " ▌")
+
+    # Reveal progressively
+    for chunk_text in chunks[1:]:
+        await asyncio.sleep(chunk_delay)
+        try:
+            await sent_msg.edit_text(chunk_text + " ▌")
+        except Exception:
+            pass  # message might have been deleted, ignore
+
+    # Final reveal — remove cursor
+    await asyncio.sleep(chunk_delay * 2)
+    try:
+        await sent_msg.edit_text(text)
+    except Exception:
+        pass
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, bot: Bot) -> None:
     """Handle /start command."""
-    await message.answer(START_TEXT)
+    await send_animated(message, START_TEXT)
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
     """Handle /help command."""
-    await message.answer(HELP_TEXT)
+    await send_animated(message, HELP_TEXT)
 
 
 @router.message(Command("today"))
-async def cmd_today(message: Message) -> None:
+async def cmd_today(message: Message, bot: Bot) -> None:
     """Handle /today command — show today's meals."""
+    await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
     async with async_session_factory() as session:
         meal_logger = MealLogger(session)
         user_id = await meal_logger.ensure_user(
@@ -81,7 +131,7 @@ async def cmd_today(message: Message) -> None:
         )
         summary_service = SummaryService(session)
         summary = await summary_service.get_today_summary(user_id)
-        await message.answer(summary)
+        await send_animated(message, summary)
 
 
 @router.message(F.text)
@@ -92,6 +142,8 @@ async def handle_text(message: Message, bot: Bot) -> None:
     if not text:
         await message.answer(UNKNOWN_TEXT)
         return
+
+    await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
     async with async_session_factory() as session:
         meal_logger = MealLogger(session)
@@ -118,9 +170,9 @@ async def handle_text(message: Message, bot: Bot) -> None:
         if intent.intent == IntentType.SHOW_TODAY:
             summary_service = SummaryService(session)
             summary = await summary_service.get_today_summary(user_id)
-            await message.answer(summary)
+            await send_animated(message, summary)
         elif intent.intent == IntentType.HELP:
-            await message.answer(HELP_TEXT)
+            await send_animated(message, HELP_TEXT)
         elif intent.intent == IntentType.LOG_MEAL:
             # Analyze food
             analyzer = FoodAnalyzer()
@@ -128,7 +180,7 @@ async def handle_text(message: Message, bot: Bot) -> None:
 
             # Save and respond
             _, response = await meal_logger.log_from_text(user_id, text, analysis)
-            await message.answer(response)
+            await send_animated(message, response)
         else:
             await message.answer(UNKNOWN_TEXT)
 
@@ -139,6 +191,8 @@ async def handle_text(message: Message, bot: Bot) -> None:
 async def handle_photo(message: Message, bot: Bot) -> None:
     """Handle photo messages (with or without caption)."""
     caption = message.caption.strip() if message.caption else None
+
+    await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
     async with async_session_factory() as session:
         meal_logger = MealLogger(session)
@@ -174,7 +228,6 @@ async def handle_photo(message: Message, bot: Bot) -> None:
         analyzer = FoodAnalyzer()
 
         if not analyzer.has_vision:
-            # Vision not configured — save photo, ask for text
             await message.answer(
                 "Фото сохранил, но vision-модель пока не настроена. "
                 "Опиши, что там было, и я запишу калории."
@@ -187,5 +240,5 @@ async def handle_photo(message: Message, bot: Bot) -> None:
         _, response = await meal_logger.log_from_photo(
             user_id, str(photo_path), caption, analysis
         )
-        await message.answer(response)
+        await send_animated(message, response)
         await session.commit()
