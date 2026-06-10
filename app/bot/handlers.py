@@ -174,9 +174,9 @@ async def handle_text(message: Message, bot: Bot) -> None:
         elif intent.intent == IntentType.HELP:
             await send_animated(message, HELP_TEXT)
         elif intent.intent == IntentType.LOG_MEAL:
-            # Analyze food
+            # Analyze food: LLM parse → USDA lookup → calculator
             analyzer = FoodAnalyzer()
-            analysis = await analyzer.analyze_text(text)
+            analysis = await analyzer.analyze_text(text, session=session)
 
             # Save and respond
             _, response = await meal_logger.log_from_text(user_id, text, analysis)

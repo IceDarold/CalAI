@@ -41,6 +41,14 @@ class FoodItem(BaseModel):
     confidence: Confidence = Confidence.MEDIUM
 
 
+class ParsedFoodItem(BaseModel):
+    """A raw parsed food item from LLM (before USDA lookup)."""
+    name: str
+    grams: float = 100
+    grams_confidence: str = "medium"
+    portion_text: str = ""
+
+
 class FoodAnalysis(BaseModel):
     """Result of food analysis from text or photo."""
     is_food: bool = True
@@ -53,3 +61,5 @@ class FoodAnalysis(BaseModel):
     confidence: Confidence = Confidence.MEDIUM
     questions: list[str] = Field(default_factory=list)
     raw_response: str | None = None
+    # Internal: parsed items from LLM (name + grams), used by calculator
+    parsed_items: list[ParsedFoodItem] = Field(default_factory=list, exclude=True)
