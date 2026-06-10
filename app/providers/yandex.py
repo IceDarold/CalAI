@@ -1,7 +1,7 @@
 """YandexGPT provider — native Yandex Foundation Models API.
 
-Uses the Yandex Cloud LLM API directly (not OpenAI-compatible).
-Reference: https://yandex.cloud/ru/docs/foundation-models/concepts/api
+Single unified orchestrator: one LLM call handles intent, parsing, and response.
+Nutrition numbers come from USDA database + calculator — never from LLM.
 """
 
 import json
@@ -11,7 +11,7 @@ import httpx
 
 from app.config import settings
 from app.providers.base import BaseFoodTextProvider, BaseIntentProvider
-from app.schemas.food import Confidence, FoodAnalysis, FoodItem, MealType
+from app.schemas.food import Confidence, FoodAnalysis, FoodItem, MealType, ParsedFoodItem
 from app.schemas.intent import IntentResult, IntentType
 
 logger = logging.getLogger(__name__)
@@ -30,124 +30,213 @@ def _headers() -> dict[str, str]:
     }
 
 
-INTENT_SYSTEM_PROMPT = """Ты — классификатор интентов для Telegram-бота трекера питания.
-Пользователь пишет в свободной форме. Определи, что он хочет.
+ORCHESTRATOR_SYSTEM_PROMPT = """Ты — дружелюбный трекер питания в Telegram. Ты помогаешь пользователю записывать приёмы пищи.
 
-Интенты:
-- log_meal: пользователь рассказывает, что съел (конкретные продукты или блюда)
-- show_today: хочет посмотреть итоги за сегодня
-- help: просит помощь, не понимает как пользоваться
-- unknown: не относится к трекингу еды (привет, погода, как дела и т.д.)
+## Твоя задача
+Прочитай сообщение пользователя и контекст. Реши, что нужно сделать, и верни СТРОГО JSON.
 
-Ответ верни СТРОГО в JSON:
-{"intent": "...", "confidence": 0.0-1.0, "reasoning": "..."}
+## Доступные действия (action)
+- "log_meal" — записать новый приём пищи
+- "append_meal" — добавить продукты к последнему приёму (пользователь написал "и ещё", "плюс", "добавь" и т.д.)
+- "show_today" — показать итоги за сегодня
+- "delete_last" — удалить последнюю запись
+- "help" — показать справку
+- "unknown" — сообщение не про еду
 
-Примеры:
-"съел курицу с рисом" → {"intent": "log_meal", "confidence": 0.95, "reasoning": "описание приёма пищи"}
-"что я сегодня ел" → {"intent": "show_today", "confidence": 0.95, "reasoning": "запрос итогов дня"}
-"как пользоваться" → {"intent": "help", "confidence": 0.9, "reasoning": "просьба помощи"}
-"привет" → {"intent": "unknown", "confidence": 0.9, "reasoning": "приветствие, не про еду"}
-"на обед была гречка с котлетой" → {"intent": "log_meal", "confidence": 0.95, "reasoning": "описание обеда"}
-"сохрани это как перекус" → {"intent": "log_meal", "confidence": 0.9, "reasoning": "просьба сохранить перекус"}"""
+## Правила для items (когда action = log_meal или append_meal)
+Для каждого продукта:
+- name_ru: название на русском ("куриная грудка", "гречка", "яблоко")
+- name_en: название на английском для поиска в базе ("chicken breast cooked", "buckwheat groats", "apple raw")
+- grams: примерный вес в граммах (если не указан — стандартная порция)
+- grams_confidence: "high" / "medium" / "low"
+- portion_text: почему такой вес ("указано 150 г", "стандартная порция")
 
+## Правила для response_text
+- Пиши на русском, дружелюбно, коротко
+- НЕ пиши конкретные калории — их посчитает база, используй {{CALORIES}} и {{PROTEIN}}
+- Если порции неизвестны — используй {{RANGE_NOTE}}
+- Если есть вопросы к пользователю — задай их в response_text
 
-FOOD_ANALYSIS_SYSTEM_PROMPT = """Ты — парсер еды. Пользователь описывает, что он съел. Твоя задача — ТОЛЬКО извлечь продукты и примерные граммы. Калории НЕ считай — их посчитает база данных.
+## Стиль ответов
+- Коротко, по-дружески, без морализаторства
+- "Записал как обед: гречка, куриная грудка. {{CALORIES}} {{RANGE_NOTE}}"
+- "Добавил к обеду: яблоко. Теперь {{CALORIES}}"
+- "Похоже на приём пищи, но не хватает порций. Сколько примерно грамм гречки было?"
+- "Не похоже на еду. Я ничего не записал."
 
-Верни СТРОГО JSON:
+## Примеры
 
-Правила:
-1. Определи is_food (true/false). False только если это точно не еда (например "привет", "как дела", "погода хорошая").
-2. Определи meal_type: breakfast/lunch/dinner/snack/unknown (на основе текста и контекста).
-3. Выдели отдельные продукты/блюда в items. Для каждого:
-   - name_ru: название на русском, как его видит пользователь ("куриная грудка", "рис", "гречка", "яблоко")
-   - name_en: название НА АНГЛИЙСКОМ для поиска в базе USDA, максимально простое ("chicken breast cooked", "white rice boiled", "buckwheat groats cooked", "apple raw")
-   - grams: примерный вес в граммах (если порция не указана — оцени консервативно: стандартная порция)
-   - grams_confidence: "high" если граммы явно указаны, "medium" если можно оценить, "low" если непонятно
-   - portion_text: кратко почему такой вес ("указано 150 г", "стандартная порция", "примерно 1 тарелка")
-4. Определи общую confidence:
-   - high: все продукты и порции ясны
-   - medium: есть примерное понимание
-   - low: много неясного
-5. Если confidence low или какой-то продукт непонятен — добавь уточняющие вопросы в questions
-6. НЕ давай медицинских советов
-7. НЕ считай калории/белки/жиры/углеводы — это сделает база данных
-8. ВСЕГДА возвращай валидный JSON, без текста до или после
-
-Пример ответа:
+Сообщение: "съел гречку с курицей"
+Контекст: пусто
+Ответ:
 {
-  "is_food": true,
+  "action": "log_meal",
   "meal_type": "lunch",
   "items": [
-    {
-      "name_ru": "куриная грудка",
-      "name_en": "chicken breast cooked",
-      "grams": 150,
-      "grams_confidence": "medium",
-      "portion_text": "стандартная порция"
-    },
-    {
-      "name_ru": "рис",
-      "name_en": "white rice boiled",
-      "grams": 200,
-      "grams_confidence": "low",
-      "portion_text": "примерно 1 тарелка"
-    }
+    {"name_ru": "гречка", "name_en": "buckwheat groats cooked", "grams": 200, "grams_confidence": "medium", "portion_text": "стандартная порция"},
+    {"name_ru": "куриная грудка", "name_en": "chicken breast cooked", "grams": 150, "grams_confidence": "medium", "portion_text": "стандартная порция"}
   ],
   "confidence": "medium",
-  "questions": ["Сколько примерно грамм риса было?"]
+  "response_text": "Записал как обед: гречка, куриная грудка. {{CALORIES}} {{RANGE_NOTE}}"
+}
+
+Сообщение: "и ещё яблоко"
+Контекст: последний приём — обед (гречка, куриная грудка)
+Ответ:
+{
+  "action": "append_meal",
+  "items": [
+    {"name_ru": "яблоко", "name_en": "apple raw", "grams": 150, "grams_confidence": "medium", "portion_text": "одно яблоко"}
+  ],
+  "confidence": "medium",
+  "response_text": "Добавил яблоко к обеду. {{CALORIES}}"
+}
+
+Сообщение: "привет"
+Контекст: любой
+Ответ:
+{
+  "action": "unknown",
+  "items": [],
+  "confidence": "high",
+  "response_text": "Привет! Расскажи, что ты съел, и я посчитаю калории."
+}
+
+Сообщение: "что я сегодня ел"
+Контекст: любой
+Ответ:
+{
+  "action": "show_today",
+  "items": [],
+  "confidence": "high",
+  "response_text": ""
+}
+
+Сообщение: "отмени последнее"
+Контекст: любой
+Ответ:
+{
+  "action": "delete_last",
+  "items": [],
+  "confidence": "high",
+  "response_text": ""
 }"""
 
 
 class YandexGPTProvider(BaseFoodTextProvider, BaseIntentProvider):
-    """YandexGPT provider for text food analysis and intent detection.
+    """YandexGPT provider with unified orchestration.
 
-    Uses Yandex Foundation Models API (non-OpenAI format).
+    One LLM call replaces: intent detection + food parsing + response formatting.
+    Only nutrition calculation is done deterministically (USDA + calculator).
     """
 
+    # ── Legacy interface (kept for compatibility) ────────────────────────
+
     async def detect_intent(self, text: str) -> IntentResult:
-        """Detect user intent via YandexGPT."""
+        """Legacy intent detection — used as fallback."""
         try:
-            raw = await self._call_api(INTENT_SYSTEM_PROMPT, text)
-            data = json.loads(raw)
+            raw = await self._call_api(ORCHESTRATOR_SYSTEM_PROMPT, text, json_mode=False)
+            data = self._parse_raw_json(raw)
             return IntentResult(
-                intent=IntentType(data.get("intent", "unknown")),
+                intent=IntentType(data.get("action", "unknown")),
                 confidence=float(data.get("confidence", 0.5)),
-                reasoning=data.get("reasoning", ""),
+                reasoning=data.get("response_text", ""),
             )
         except Exception as e:
-            logger.warning(f"YandexGPT intent detection failed: {e}")
-            return IntentResult(intent=IntentType.UNKNOWN, confidence=0.0, reasoning=f"API error: {e}")
+            logger.warning(f"YandexGPT intent failed: {e}")
+            return IntentResult(intent=IntentType.UNKNOWN, confidence=0.0, reasoning=str(e))
 
     async def analyze_food_text(
         self, text: str, context: dict | None = None
     ) -> FoodAnalysis:
-        """Analyze food from text via YandexGPT."""
-        try:
-            raw = await self._call_api(FOOD_ANALYSIS_SYSTEM_PROMPT, text)
-            return self._parse_analysis(raw)
-        except Exception as e:
-            logger.error(f"YandexGPT food analysis failed: {e}")
-            return FoodAnalysis(
-                is_food=False,
-                meal_type=MealType.UNKNOWN,
-                confidence=Confidence.LOW,
-                questions=["Не удалось проанализировать через AI. Попробуй ещё раз или опиши по-другому."],
-            )
+        """Legacy food analysis — used as fallback."""
+        result = await self.orchestrate(text, context)
+        items = []
+        for item_data in result.get("items", []):
+            items.append(FoodItem(
+                name=item_data.get("name_ru", item_data.get("name", "")),
+                portion_text=item_data.get("portion_text"),
+                confidence=Confidence(item_data.get("grams_confidence", "medium")),
+            ))
+        return FoodAnalysis(
+            is_food=result.get("action") in ("log_meal", "append_meal"),
+            meal_type=MealType(result.get("meal_type", "unknown")),
+            items=items,
+            confidence=Confidence(result.get("confidence", "medium")),
+            questions=[],
+            raw_response=json.dumps(result, ensure_ascii=False),
+            parsed_items=[
+                ParsedFoodItem(
+                    name_ru=it.get("name_ru", it.get("name", "")),
+                    name_en=it.get("name_en", it.get("name", "")),
+                    grams=float(it.get("grams", 100)),
+                    grams_confidence=it.get("grams_confidence", "medium"),
+                    portion_text=it.get("portion_text", ""),
+                )
+                for it in result.get("items", [])
+            ],
+        )
 
-    async def _call_api(self, system_prompt: str, user_message: str) -> str:
-        """Call YandexGPT completion API. Returns raw text response."""
+    # ── Unified orchestrator ─────────────────────────────────────────────
+
+    async def orchestrate(
+        self, text: str, context: dict | None = None
+    ) -> dict:
+        """Single LLM call that decides everything.
+
+        Args:
+            text: User's message
+            context: {last_meal, today_summary, draft_count, ...}
+
+        Returns:
+            dict with action, items, meal_type, confidence, response_text
+        """
+        user_message = f"Сообщение пользователя: {text}\n\n"
+
+        if context:
+            if context.get("last_meal"):
+                lm = context["last_meal"]
+                items_str = ", ".join(
+                    f"{it.get('name_ru', it.get('name', '?'))} (~{it.get('grams', '?')}г)"
+                    for it in lm.get("items", [])
+                )
+                user_message += f"Контекст — последний приём пищи: {lm.get('meal_type', '?')} ({items_str})\n"
+            if context.get("draft_count", 0) > 0:
+                user_message += f"Контекст — у пользователя {context['draft_count']} незавершённых записей\n"
+        else:
+            user_message += "Контекст: это первое сообщение, истории пока нет.\n"
+
+        try:
+            raw = await self._call_api(ORCHESTRATOR_SYSTEM_PROMPT, user_message, json_mode=True)
+            return self._parse_raw_json(raw)
+        except Exception as e:
+            logger.error(f"Orchestrator failed: {e}")
+            return {
+                "action": "unknown",
+                "items": [],
+                "confidence": "low",
+                "response_text": "",
+                "_error": str(e),
+            }
+
+    # ── Helpers ──────────────────────────────────────────────────────────
+
+    async def _call_api(
+        self, system_prompt: str, user_message: str, json_mode: bool = True
+    ) -> str:
         body = {
             "modelUri": _model_uri(),
             "completionOptions": {
                 "temperature": 0.3,
                 "maxTokens": "4000",
-                "responseFormat": {"type": "json_object"},
             },
             "messages": [
                 {"role": "system", "text": system_prompt},
                 {"role": "user", "text": user_message},
             ],
         }
+        if json_mode:
+            body["completionOptions"]["responseFormat"] = {"type": "json_object"}
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(YANDEX_API_URL, headers=_headers(), json=body)
@@ -160,7 +249,6 @@ class YandexGPTProvider(BaseFoodTextProvider, BaseIntentProvider):
         return text
 
     def _parse_raw_json(self, raw: str) -> dict:
-        """Extract JSON from potentially markdown-wrapped LLM response."""
         text = raw.strip()
         if text.startswith("```"):
             lines = text.split("\n")
@@ -170,49 +258,3 @@ class YandexGPTProvider(BaseFoodTextProvider, BaseIntentProvider):
                 lines = lines[:-1]
             text = "\n".join(lines)
         return json.loads(text)
-
-    def _parse_analysis(self, raw: str) -> FoodAnalysis:
-        """Parse YandexGPT response into FoodAnalysis.
-
-        Note: calories/protein are NOT in the LLM response anymore —
-        they come from USDA lookup + calculator in food_analyzer.py.
-        This method extracts parsed items (name + grams) and metadata.
-        """
-        data = self._parse_raw_json(raw)
-
-        items = []
-        for item_data in data.get("items", []):
-            items.append(FoodItem(
-                name=item_data.get("name", ""),
-                portion_text=item_data.get("portion_text"),
-                calories_min=None,  # filled by calculator
-                calories_max=None,   # filled by calculator
-                protein_min_g=None,  # filled by calculator
-                protein_max_g=None,  # filled by calculator
-                confidence=Confidence(item_data.get("grams_confidence", "medium")),
-            ))
-
-        from app.schemas.food import ParsedFoodItem
-
-        return FoodAnalysis(
-            is_food=data.get("is_food", True),
-            meal_type=MealType(data.get("meal_type", "unknown")),
-            items=items,
-            total_calories_min=None,   # filled by calculator
-            total_calories_max=None,    # filled by calculator
-            total_protein_min_g=None,   # filled by calculator
-            total_protein_max_g=None,   # filled by calculator
-            confidence=Confidence(data.get("confidence", "medium")),
-            questions=data.get("questions", []),
-            raw_response=raw,
-            parsed_items=[
-                ParsedFoodItem(
-                    name_ru=item_data.get("name_ru", item_data.get("name", "")),
-                    name_en=item_data.get("name_en", item_data.get("name", "")),
-                    grams=float(item_data.get("grams", 100)),
-                    grams_confidence=item_data.get("grams_confidence", "medium"),
-                    portion_text=item_data.get("portion_text", ""),
-                )
-                for item_data in data.get("items", [])
-            ],
-        )
