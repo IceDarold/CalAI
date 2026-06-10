@@ -82,16 +82,23 @@ class MockProvider(BaseFoodTextProvider, BaseIntentProvider, BaseVisionProvider)
             if p in text_lower:
                 return IntentResult(intent=IntentType.HELP, confidence=0.9, reasoning=f"matched pattern: {p}")
 
-        # Check for food-related content
+        # Check for food-related content — use word boundaries to avoid false positives
+        # e.g. "дела" should NOT match "ел"
         food_indicators = ["съел", "ел", "ем", "поел", "поела", "кушал", "пообедал",
                           "позавтракал", "поужинал", "перекусил", "завтрак", "обед",
                           "ужин", "перекус", "приготовил", "заказал", "сохрани"]
+
+        for ind in food_indicators:
+            if re.search(r'\b' + re.escape(ind) + r'\b', text_lower):
+                return IntentResult(intent=IntentType.LOG_MEAL, confidence=0.7, reasoning=f"food indicator: {ind}")
+
         food_words = ["куриц", "рис", "гречк", "мяс", "рыб", "суп", "салат",
                      "каш", "йогурт", "хлеб", "яйц", "овощ", "фрукт", "котлет",
                      "картошк", "макарон", "сыр", "творог", "сосиск"]
 
-        if any(ind in text_lower for ind in food_indicators) or any(fw in text_lower for fw in food_words):
-            return IntentResult(intent=IntentType.LOG_MEAL, confidence=0.7, reasoning="food indicators detected")
+        for fw in food_words:
+            if fw in text_lower:
+                return IntentResult(intent=IntentType.LOG_MEAL, confidence=0.7, reasoning=f"food word: {fw}")
 
         return IntentResult(intent=IntentType.UNKNOWN, confidence=0.3, reasoning="no patterns matched")
 

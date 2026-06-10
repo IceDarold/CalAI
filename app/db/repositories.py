@@ -85,6 +85,8 @@ async def save_meal(
         session.add(item)
 
     await session.flush()
+    # Refresh to load relationships (items) for immediate access
+    await session.refresh(meal, attribute_names=["items"])
     return meal
 
 

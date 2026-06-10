@@ -95,7 +95,7 @@ async def test_meal_logger_from_text(session, sample_food_analysis):
 async def test_meal_logger_draft_on_low_confidence(session):
     """Low confidence analysis should result in draft status."""
     logger = MealLogger(session)
-    user_id = await logger.ensure_user(telegram_id=12348, first_name="Test")
+    user_id = await logger.ensure_user(telegram_id=12348, username=None, first_name="Test")
 
     low_conf_analysis = FoodAnalysis(
         is_food=True,
