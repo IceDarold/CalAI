@@ -70,30 +70,68 @@ HELP_TEXT = """Как это работает:
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 async def _build_context(session, user_id: int, telegram_id: int) -> dict:
-    """Build context dict for the LLM orchestrator."""
-    ctx: dict = {}
+    """Build rich context dict for the LLM orchestrator.
 
-    # Last meal
+    Includes: today's meals, last meal details, recent messages, drafts.
+    """
+    from app.db.models import Meal, RawMessage
+    from sqlalchemy import select
+    from app.db.repositories import get_today_meals, get_today_totals
+
+    ctx: dict = {
+        "history": [],
+        "last_meal": None,
+        "draft_count": 0,
+    }
+
+    # ── Today's meals summary ──
+    meals = await get_today_meals(session, user_id)
+    totals = await get_today_totals(session, user_id)
+    ctx["meals_today"] = []
+    for m in meals:
+        items = [{"name": it.name, "grams": f"{it.calories_min or '?'}"} for it in m.items]
+        ctx["meals_today"].append({
+            "meal_type": format_meal_type(m.meal_type),
+            "items": items,
+            "calories": f"{m.calories_min}–{m.calories_max} ккал" if m.calories_min else "?",
+            "status": m.status,
+        })
+    ctx["totals_today"] = {
+        "calories": f"{totals.get('calories_min', 0)}–{totals.get('calories_max', 0)} ккал",
+        "protein": f"{totals.get('protein_min_g', 0):.0f}–{totals.get('protein_max_g', 0):.0f} г",
+    }
+
+    # ── Last meal detail ──
     last_id = get_last_meal(telegram_id)
     if last_id:
-        from app.db.models import Meal
         meal = await session.get(Meal, last_id)
         if meal:
             ctx["last_meal"] = {
                 "meal_type": format_meal_type(meal.meal_type),
-                "items": [
-                    {"name_ru": it.name, "grams": it.calories_min}  # approximate
-                    for it in meal.items
-                ],
+                "items": [{"name_ru": it.name, "grams": f"{it.calories_min or '?'} г"} for it in meal.items],
+                "calories": f"{meal.calories_min}–{meal.calories_max} ккал" if meal.calories_min else "?",
+                "original_text": meal.original_text or "",
             }
 
-    # Draft count
-    from app.db.models import Meal
-    from sqlalchemy import select
+    # ── Draft count ──
     result = await session.execute(
         select(Meal).where(Meal.user_id == user_id, Meal.status == "draft")
     )
     ctx["draft_count"] = len(result.scalars().all())
+
+    # ── Recent raw messages (last 10) ──
+    result = await session.execute(
+        select(RawMessage)
+        .where(RawMessage.user_id == user_id)
+        .order_by(RawMessage.created_at.desc())
+        .limit(10)
+    )
+    recent = list(result.scalars())
+    recent.reverse()  # chronological order
+    ctx["history"] = [
+        {"role": "user", "text": rm.text or "(фото)"}
+        for rm in recent
+    ]
 
     return ctx
 

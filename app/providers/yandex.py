@@ -32,6 +32,8 @@ def _headers() -> dict[str, str]:
 
 ORCHESTRATOR_SYSTEM_PROMPT = """Ты — дружелюбный трекер питания в Telegram. Ты помогаешь пользователю записывать приёмы пищи.
 
+Ты видишь историю переписки и контекст — все приёмы пищи за сегодня, последний приём, черновики. Используй это чтобы принимать правильные решения.
+
 ## Твоя задача
 Прочитай сообщение пользователя и контекст. Реши, что нужно сделать, и верни СТРОГО JSON.
 
@@ -186,25 +188,54 @@ class YandexGPTProvider(BaseFoodTextProvider, BaseIntentProvider):
 
         Args:
             text: User's message
-            context: {last_meal, today_summary, draft_count, ...}
+            context: {history, meals_today, totals_today, last_meal, draft_count}
 
         Returns:
             dict with action, items, meal_type, confidence, response_text
         """
-        user_message = f"Сообщение пользователя: {text}\n\n"
+        parts = [f"Сообщение пользователя: {text}", ""]
 
         if context:
+            # Today's meals
+            if context.get("meals_today"):
+                parts.append("Приёмы пищи за сегодня:")
+                for i, m in enumerate(context["meals_today"], 1):
+                    items = ", ".join(f"{it['name']} ({it['grams']})" for it in m.get("items", []))
+                    status = " (draft)" if m.get("status") == "draft" else ""
+                    parts.append(f"  {i}. {m['meal_type']}{status}: {items} — {m.get('calories', '?')}")
+                if context.get("totals_today"):
+                    t = context["totals_today"]
+                    parts.append(f"  Итого: {t.get('calories', '?')}, белок {t.get('protein', '?')}")
+                parts.append("")
+
+            # Last meal
             if context.get("last_meal"):
                 lm = context["last_meal"]
-                items_str = ", ".join(
-                    f"{it.get('name_ru', it.get('name', '?'))} (~{it.get('grams', '?')}г)"
+                items = ", ".join(
+                    f"{it.get('name_ru', it.get('name', '?'))} ({it.get('grams', '?')})"
                     for it in lm.get("items", [])
                 )
-                user_message += f"Контекст — последний приём пищи: {lm.get('meal_type', '?')} ({items_str})\n"
+                parts.append(f"Последний приём пищи: {lm.get('meal_type', '?')} — {items} ({lm.get('calories', '?')})")
+                if lm.get("original_text"):
+                    parts.append(f"  (было написано: \"{lm['original_text']}\")")
+                parts.append("")
+
+            # History
+            if context.get("history"):
+                parts.append("История переписки (последние сообщения):")
+                for msg in context["history"]:
+                    parts.append(f"  пользователь: {msg['text']}")
+                parts.append("")
+
+            # Drafts
             if context.get("draft_count", 0) > 0:
-                user_message += f"Контекст — у пользователя {context['draft_count']} незавершённых записей\n"
+                parts.append(f"У пользователя {context['draft_count']} незавершённых записей (draft).")
+                parts.append("")
         else:
-            user_message += "Контекст: это первое сообщение, истории пока нет.\n"
+            parts.append("Контекст: это первое сообщение, истории пока нет.")
+            parts.append("")
+
+        user_message = "\n".join(parts)
 
         try:
             raw = await self._call_api(ORCHESTRATOR_SYSTEM_PROMPT, user_message, json_mode=True)
