@@ -60,10 +60,10 @@ async def _search_by_words(
     sql = text(f"""
         SELECT id, name, kcal_per_100g, protein_per_100g,
                fat_per_100g, carbs_per_100g, source,
-               ({score_expr}) * 30 +
-               CASE WHEN name_lower = :exact THEN 100 ELSE 0 END +
-               CASE WHEN name_lower LIKE :prefix THEN 50 ELSE 0 END
-               AS score
+               CASE WHEN name_lower = :exact THEN 200
+                    WHEN name_lower LIKE :prefix THEN 100
+                    ELSE ({score_expr}) * 20
+               END AS score
         FROM food_items
         WHERE {where_clause}
         ORDER BY score DESC, name_lower ASC
