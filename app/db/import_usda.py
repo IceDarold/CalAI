@@ -50,12 +50,12 @@ def ensure_downloaded() -> list[tuple[str, Path]]:
     return result
 
 
-def read_foods_from_zip(zip_path: Path) -> dict[str, tuple[str, str]]:
+def read_foods_from_zip(zip_path: Path) -> dict[str, tuple[str, float | None, float | None, float | None, float | None, str]]:
     """Read food.csv from zip, return {fdc_id: (description, category_name)}."""
     foods: dict[str, tuple[str, str]] = {}
     with zipfile.ZipFile(zip_path) as zf:
         # Read food.csv
-        food_csv = [n for n in zf.namelist() if n.endswith("food.csv") and "FoodData" in n][0]
+        food_csv = [n for n in zf.namelist() if n.endswith("/food.csv") and "FoodData" in n][0]
         with zf.open(food_csv) as f:
             reader = csv.DictReader(TextIOWrapper(f, encoding="utf-8"))
             for row in reader:
@@ -66,7 +66,7 @@ def read_foods_from_zip(zip_path: Path) -> dict[str, tuple[str, str]]:
                     foods[fdc_id] = (desc, data_type)
 
         # Read food_category.csv if present for category names
-        cat_csv_names = [n for n in zf.namelist() if n.endswith("food_category.csv")]
+        cat_csv_names = [n for n in zf.namelist() if n.endswith("/food_category.csv")]
         categories: dict[str, str] = {}
         if cat_csv_names:
             with zf.open(cat_csv_names[0]) as f:
@@ -77,7 +77,7 @@ def read_foods_from_zip(zip_path: Path) -> dict[str, tuple[str, str]]:
                     categories[cat_id] = cat_name
 
         # Read food_nutrient.csv
-        nutrient_csv = [n for n in zf.namelist() if n.endswith("food_nutrient.csv") and "FoodData" in n][0]
+        nutrient_csv = [n for n in zf.namelist() if n.endswith("/food_nutrient.csv") and "FoodData" in n][0]
         nutrients: dict[str, dict[str, float]] = {}
         with zf.open(nutrient_csv) as f:
             reader = csv.DictReader(TextIOWrapper(f, encoding="utf-8"))
