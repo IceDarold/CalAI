@@ -10,20 +10,23 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting deployment..."
 
 cd "$APP_DIR"
 
-echo "[1/4] Pulling latest code..."
+echo "[1/5] Pulling latest code..."
 git pull origin main
 
-echo "[2/4] Installing dependencies..."
+echo "[1.5/5] Ensuring data directories..."
+mkdir -p "$APP_DIR/data/photos"
+
+echo "[2/5] Installing dependencies..."
 if [ ! -d "$VENV_DIR" ]; then
     python3 -m venv "$VENV_DIR"
 fi
 "$VENV_DIR/bin/pip" install -r requirements.txt
 
-echo "[3/4] Copying systemd service..."
+echo "[3/5] Copying systemd service..."
 cp deploy/calai-bot.service /etc/systemd/system/calai-bot.service
 systemctl daemon-reload
 
-echo "[4/4] Restarting service..."
+echo "[4/5] Restarting service..."
 systemctl enable calai-bot.service
 systemctl restart calai-bot.service
 

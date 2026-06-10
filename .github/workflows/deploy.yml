@@ -24,14 +24,14 @@ jobs:
             git pull origin main
 
             echo "[2/4] Installing dependencies..."
-            /root/calai/venv/bin/pip install -r requirements.txt
+            /root/calai/venv/bin/pip install -r requirements.txt -q
 
             echo "[3/4] Reloading systemd..."
+            mkdir -p /root/calai/data/photos
             cp deploy/calai-bot.service /etc/systemd/system/calai-bot.service
             systemctl daemon-reload
 
             echo "[4/4] Restarting service..."
-            systemctl enable calai-bot.service
             systemctl restart calai-bot.service
 
             echo "=== Deploy complete ==="
