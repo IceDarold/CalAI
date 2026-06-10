@@ -15,8 +15,10 @@ db.commit()
 print(f"Before: {before}")
 print(f"Deleted: {deleted} junk items")
 print(f"After: {after} clean foods")
-print(f"  Foundation Foods: {db.execute(\"SELECT COUNT(1) FROM food_items WHERE source='foundation_food'\").fetchone()[0]}")
-print(f"  SR Legacy: {db.execute(\"SELECT COUNT(1) FROM food_items WHERE source='sr_legacy_food'\").fetchone()[0]}")
+ff_count = db.execute("SELECT COUNT(1) FROM food_items WHERE source='foundation_food'").fetchone()[0]
+sr_count = db.execute("SELECT COUNT(1) FROM food_items WHERE source='sr_legacy_food'").fetchone()[0]
+print(f"  Foundation Foods: {ff_count}")
+print(f"  SR Legacy: {sr_count}")
 
 # Verify apple search is now better
 print("\n=== apple ===")
