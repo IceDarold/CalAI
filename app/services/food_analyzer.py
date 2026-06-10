@@ -24,6 +24,9 @@ class FoodAnalyzer:
 
     @property
     def has_vision(self) -> bool:
-        """Check if the current vision provider can actually analyze photos."""
+        """Check if the current vision provider can actually analyze photos.
+
+        Only OpenAI vision models are supported. YandexGPT has no vision API.
+        """
         from app.config import settings
-        return settings.vision_provider != "mock"
+        return settings.ai_provider == "openai" and bool(settings.openai_api_key)

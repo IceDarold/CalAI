@@ -1,27 +1,13 @@
 """Test fixtures for CalAI."""
 
-import asyncio
-import os
-from pathlib import Path
-
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db.models import Base
-from app.schemas.food import FoodAnalysis
+from app.schemas.food import Confidence, FoodAnalysis, FoodItem, MealType
 
 # Use in-memory SQLite for tests
 TEST_DB_URL = "sqlite+aiosqlite://"
-
-TEST_PHOTO_DIR = Path(__file__).parent / "data" / "photos"
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for the session."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
 
 
 @pytest.fixture
@@ -52,8 +38,6 @@ async def session(engine):
 @pytest.fixture
 def sample_food_analysis() -> FoodAnalysis:
     """A sample food analysis result."""
-    from app.schemas.food import Confidence, FoodItem, MealType
-
     return FoodAnalysis(
         is_food=True,
         meal_type=MealType.LUNCH,

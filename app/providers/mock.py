@@ -25,7 +25,7 @@ from app.schemas.intent import IntentResult, IntentType
 # ── Food database ──────────────────────────────────────────────────────────
 # Each entry: (keywords, name, kcal_per_100g, protein_per_100g, typical_portion_g)
 FOOD_DB: list[tuple[list[str], str, int, float, int]] = [
-    (["куриц", "курица", "куриное", "куриный", "chicken", "цыпленок"], "курица", 165, 31.0, 150),
+    (["курин", "куриц", "курица", "куриное", "куриный", "грудк", "филе", "chicken", "цыпленок"], "курица", 165, 31.0, 150),
     (["рис", "rice"], "рис", 130, 2.7, 150),
     (["гречк", "греча", "buckwheat"], "гречка", 110, 4.0, 150),
     (["картошк", "картофел", "potato", "пюре"], "картофель", 80, 2.0, 200),
