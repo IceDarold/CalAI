@@ -27,8 +27,15 @@ async def main() -> None:
     await init_db()
     logger.info("Database initialized.")
 
-    # Create bot and dispatcher
-    bot = Bot(token=settings.telegram_bot_token)
+    # Create bot with optional proxy
+    bot_kwargs = {"token": settings.telegram_bot_token}
+    if settings.telegram_proxy:
+        from aiogram.client.session.aiohttp import AiohttpSession
+        session = AiohttpSession(proxy=settings.telegram_proxy)
+        bot_kwargs["session"] = session
+        logger.info(f"Using proxy: {settings.telegram_proxy}")
+
+    bot = Bot(**bot_kwargs)
     dp = Dispatcher()
     dp.include_router(router)
 

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     """Application settings."""
 
     telegram_bot_token: str = ""
+    telegram_proxy: str = ""  # SOCKS5 or HTTP proxy URL for Telegram API (e.g. socks5://127.0.0.1:3128)
     database_url: str = f"sqlite+aiosqlite:///{BASE_DIR / 'data' / 'app.db'}"
     app_timezone: str = "Europe/Berlin"
 
