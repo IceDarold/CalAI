@@ -72,12 +72,11 @@ class FoodAnalyzer:
         analysis.total_protein_max_g = round(calc_result.total_protein_g * 1.15, 1)
         analysis.confidence = Confidence(calc_result.confidence)
 
-        # Update items with USDA data
+        # Update items with USDA-calculated values
         enriched_items = []
         for parsed, calc_item in zip(analysis.parsed_items, calc_result.items):
-            usda_name = calc_item.matched_food["name"] if calc_item.matched_food else parsed.name
             enriched_items.append(FoodItem(
-                name=usda_name,
+                name=parsed.name,  # user-friendly display name
                 portion_text=parsed.portion_text or f"~{calc_item.grams:.0f} г",
                 calories_min=int(calc_item.kcal * 0.85),
                 calories_max=int(calc_item.kcal * 1.15),
