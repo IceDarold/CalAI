@@ -1,0 +1,21 @@
+[Unit]
+Description=CalAI Telegram Food Tracker Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/calai
+ExecStart=/root/calai/venv/bin/python -m app.main
+
+Restart=always
+RestartSec=10
+
+Environment=PYTHONUNBUFFERED=1
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
