@@ -59,7 +59,9 @@ class FoodAnalyzer:
         food_matches = []
 
         for pi in analysis.parsed_items:
-            matches = await search_food(session, pi.name, limit=1)
+            # Use English name for USDA search
+            search_query = pi.name_en or pi.name_ru
+            matches = await search_food(session, search_query, limit=1)
             food_matches.append(matches[0] if matches else None)
 
         # Calculate
@@ -72,11 +74,12 @@ class FoodAnalyzer:
         analysis.total_protein_max_g = round(calc_result.total_protein_g * 1.15, 1)
         analysis.confidence = Confidence(calc_result.confidence)
 
-        # Update items with USDA-calculated values
+        # Update items with USDA-calculated values, use Russian names for display
         enriched_items = []
         for parsed, calc_item in zip(analysis.parsed_items, calc_result.items):
+            display_name = parsed.name_ru or parsed.name_en or parsed.name
             enriched_items.append(FoodItem(
-                name=parsed.name,  # user-friendly display name
+                name=display_name,  # Russian name for user
                 portion_text=parsed.portion_text or f"~{calc_item.grams:.0f} г",
                 calories_min=int(calc_item.kcal * 0.85),
                 calories_max=int(calc_item.kcal * 1.15),

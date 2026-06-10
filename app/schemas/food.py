@@ -43,10 +43,16 @@ class FoodItem(BaseModel):
 
 class ParsedFoodItem(BaseModel):
     """A raw parsed food item from LLM (before USDA lookup)."""
-    name: str
+    name_ru: str = ""   # user-visible name in Russian
+    name_en: str = ""   # English name for USDA search
     grams: float = 100
     grams_confidence: str = "medium"
     portion_text: str = ""
+
+    @property
+    def name(self) -> str:
+        """Display name — Russian if available, otherwise English."""
+        return self.name_ru or self.name_en
 
 
 class FoodAnalysis(BaseModel):
