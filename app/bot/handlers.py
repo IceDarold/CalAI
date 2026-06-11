@@ -297,8 +297,16 @@ async def handle_text(message: Message, bot: Bot) -> None:
         ctx = await _build_context(session, user_id, telegram_id)
 
         # ── LLM decision ──
-        from app.providers.yandex import YandexGPTProvider
-        llm = YandexGPTProvider()
+        from app.config import settings as s
+        if s.ai_provider == "gigachat" and s.gigachat_credentials:
+            from app.providers.gigachat import GigaChatProvider
+            llm = GigaChatProvider()
+        elif s.ai_provider == "yandex" and s.yandex_api_key:
+            from app.providers.yandex import YandexGPTProvider
+            llm = YandexGPTProvider()
+        else:
+            from app.providers.mock import MockProvider
+            llm = MockProvider()
         result = await llm.orchestrate(text, ctx)
 
         action = result.get("action", "unknown")

@@ -60,11 +60,41 @@ MEAL_TYPE_KEYWORDS: dict[str, list[str]] = {
 
 
 class MockProvider(BaseFoodTextProvider, BaseIntentProvider, BaseVisionProvider):
-    """Mock provider that uses rule-based matching.
+    """Mock provider — rule-based fallback when no AI is configured."""
 
-    Combines all three interfaces for simplicity.
-    In a real setup, the mock is replaced by actual LLM providers.
-    """
+    async def orchestrate(self, text: str, context: dict | None = None) -> dict:
+        """Simple rule-based orchestrator for fallback."""
+        # Detect intent
+        intent = await self.detect_intent(text)
+
+        if intent.intent == IntentType.SHOW_TODAY:
+            return {"action": "show_today", "items": [], "confidence": "high", "response_text": ""}
+        if intent.intent == IntentType.HELP:
+            return {"action": "help", "items": [], "confidence": "high", "response_text": ""}
+        if intent.intent == IntentType.UNKNOWN:
+            return {"action": "unknown", "items": [], "confidence": "low", "response_text": ""}
+
+        # Try to parse food items
+        analysis = await self.analyze_food_text(text)
+        if not analysis.is_food:
+            return {"action": "unknown", "items": [], "confidence": "low", "response_text": ""}
+
+        return {
+            "action": "log_meal",
+            "meal_type": analysis.meal_type.value,
+            "items": [
+                {
+                    "name_ru": item.name,
+                    "name_en": item.name,
+                    "grams": item.calories_min or 100,
+                    "grams_confidence": item.confidence.value,
+                    "portion_text": item.portion_text or "",
+                }
+                for item in analysis.items
+            ],
+            "confidence": analysis.confidence.value,
+            "response_text": "",  # uses default formatting
+        }
 
     async def detect_intent(self, text: str) -> IntentResult:
         """Rule-based intent detection."""

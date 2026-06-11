@@ -14,26 +14,31 @@ class Settings(BaseSettings):
     """Application settings."""
 
     telegram_bot_token: str = ""
-    telegram_proxy: str = ""  # SOCKS5 or HTTP proxy URL for Telegram API (e.g. socks5://127.0.0.1:3128)
+    telegram_proxy: str = ""
     database_url: str = f"sqlite+aiosqlite:///{BASE_DIR / 'data' / 'app.db'}"
     app_timezone: str = "Europe/Berlin"
 
-    # AI provider selection: "yandex" | "openai" | "mock"
+    # AI provider: "gigachat" | "yandex" | "openai" | "mock"
     ai_provider: str = "mock"
 
-    # YandexGPT
+    # GigaChat (Sber) — recommended: text + vision in one API
+    gigachat_credentials: str = ""  # base64(client_id:client_secret) or just "client_id:client_secret"
+    gigachat_model: str = "GigaChat-2-Max"
+
+    # YandexGPT (legacy, text-only)
     yandex_api_key: str = ""
     yandex_folder_id: str = ""
     yandex_model: str = "yandexgpt-5.1"
 
-    # OpenAI-compatible (used when ai_provider = "openai")
+    # OpenAI-compatible
     openai_api_key: str = ""
     openai_base_url: str = ""
     openai_model: str = ""
 
     @property
     def is_ai_configured(self) -> bool:
-        """Check if any real AI provider is configured."""
+        if self.ai_provider == "gigachat":
+            return bool(self.gigachat_credentials)
         if self.ai_provider == "yandex":
             return bool(self.yandex_api_key and self.yandex_folder_id)
         if self.ai_provider == "openai":

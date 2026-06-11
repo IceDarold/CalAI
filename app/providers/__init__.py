@@ -1,40 +1,32 @@
-"""Provider factory — creates the appropriate provider based on config.
-
-Priority: YandexGPT > OpenAI > Mock (no-AI fallback)
-"""
+"""Provider factory. Priority: GigaChat > Yandex > OpenAI > Mock."""
 
 from app.config import settings
 from app.providers.base import BaseFoodTextProvider, BaseIntentProvider, BaseVisionProvider
 from app.providers.mock import MockProvider
-from app.providers.yandex import YandexGPTProvider
-from app.providers.text_llm import LLMTextProvider
-from app.providers.vision_llm import LLMVisionProvider
 
 
 def get_text_provider() -> BaseFoodTextProvider:
-    """Get the configured food text analysis provider."""
+    if settings.ai_provider == "gigachat" and settings.gigachat_credentials:
+        from app.providers.gigachat import GigaChatProvider
+        return GigaChatProvider()
     if settings.ai_provider == "yandex" and settings.yandex_api_key:
+        from app.providers.yandex import YandexGPTProvider
         return YandexGPTProvider()
     if settings.ai_provider == "openai" and settings.openai_api_key:
+        from app.providers.text_llm import LLMTextProvider
         return LLMTextProvider()
     return MockProvider()
 
 
 def get_intent_provider() -> BaseIntentProvider:
-    """Get the configured intent detection provider."""
-    if settings.ai_provider == "yandex" and settings.yandex_api_key:
-        return YandexGPTProvider()
-    if settings.ai_provider == "openai" and settings.openai_api_key:
-        return LLMTextProvider()
-    return MockProvider()
+    return get_text_provider()  # same provider handles both
 
 
 def get_vision_provider() -> BaseVisionProvider:
-    """Get the configured vision analysis provider.
-
-    Note: YandexGPT does not support vision natively.
-    OpenAI-compatible providers with vision models work when configured.
-    """
+    if settings.ai_provider == "gigachat" and settings.gigachat_credentials:
+        from app.providers.gigachat import GigaChatProvider
+        return GigaChatProvider()
     if settings.ai_provider == "openai" and settings.openai_api_key:
+        from app.providers.vision_llm import LLMVisionProvider
         return LLMVisionProvider()
     return MockProvider()
