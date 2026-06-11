@@ -384,12 +384,41 @@ async def handle_text(message: Message, bot: Bot) -> None:
 
         # ── Food actions ──
         if action in ("log_meal", "append_meal", "update_meal", "update_meal_by_id"):
+            eaten_at = _parse_eaten_at(result.get("eaten_at_iso"))
+            items_list = result.get("items", [])
+
+            # ── Metadata-only update: no items, just changing type/time ──
+            if action in ("update_meal", "update_meal_by_id") and not items_list:
+                meal_id = result.get("meal_id") if action == "update_meal_by_id" else get_last_meal(telegram_id)
+                if not meal_id:
+                    await message.answer("Не понял какую запись исправить.")
+                    await session.commit(); return
+
+                from app.db.repositories import get_meal_by_id
+                meal = await get_meal_by_id(session, meal_id)
+                if not meal or meal.user_id != uid:
+                    await message.answer("Не могу найти эту запись.")
+                    await session.commit(); return
+
+                new_type = result.get("meal_type")
+                new_time = _parse_eaten_at(result.get("eaten_at_iso"))
+                if new_type:
+                    meal.meal_type = new_type
+                if new_time:
+                    meal.eaten_at = new_time
+                meal.updated_at = dt.datetime.utcnow()
+                await session.flush()
+
+                time_str = meal.eaten_at.strftime('%H:%M') if meal.eaten_at else ''
+                resp = llm_response or f"Исправил: {format_meal_type(meal.meal_type)}, {time_str}"
+                await send_animated(message, resp)
+                await session.commit(); return
+
+            # ── Normal food action with items ──
             items, parsed, analysis = await _run_nutrition_pipeline(session, result)
             if not parsed:
                 await message.answer("Не смог разобрать что за еда. Опиши подробнее!")
                 await session.commit(); return
-
-            eaten_at = _parse_eaten_at(result.get("eaten_at_iso"))
 
             if action == "log_meal":
                 meal, _ = await ml.log_from_text(uid, text, analysis, eaten_at)
@@ -415,26 +444,6 @@ async def handle_text(message: Message, bot: Bot) -> None:
                 last_id = get_last_meal(telegram_id)
                 if last_id is None:
                     await message.answer("Нечего исправлять."); await session.commit(); return
-                # Metadata-only update? (changing meal_type or time, no food items)
-                if not parsed:
-                    from app.db.repositories import get_meal_by_id
-                    meal = await get_meal_by_id(session, last_id)
-                    if meal and meal.user_id == uid:
-                        new_type = result.get("meal_type")
-                        new_time = _parse_eaten_at(result.get("eaten_at_iso"))
-                        if new_type:
-                            meal.meal_type = new_type
-                        if new_time:
-                            meal.eaten_at = new_time
-                        meal.updated_at = dt.datetime.utcnow()
-                        await session.flush()
-                        resp = llm_response or f"Исправил: {format_meal_type(meal.meal_type)}, {meal.eaten_at.strftime('%H:%M') if meal.eaten_at else ''}"
-                        await send_animated(message, resp)
-                    else:
-                        await message.answer("Не могу найти запись для исправления.")
-                    await session.commit(); return
-
-                # Full update with new items
                 meal, _ = await ml.update_meal(last_id, text, analysis)
                 if meal and eaten_at: meal.eaten_at = eaten_at
 
