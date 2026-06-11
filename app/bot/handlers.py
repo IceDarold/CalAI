@@ -15,22 +15,7 @@ from app.services.food_analyzer import FoodAnalyzer
 from app.services.meal_logger import (
     MealLogger, get_last_meal, set_last_meal, clear_last_meal,
 )
-import httpx
-
-from app.utils.files import download_telegram_photo
-
-
-async def _download_voice(bot_token: str, file_path: str) -> bytes | None:
-    """Download voice message bytes from Telegram."""
-    url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return resp.content
-    except Exception as e:
-        logger.error(f"Voice download failed: {e}")
-        return None
+from app.utils.files import download_telegram_photo, download_telegram_voice
 from app.utils.time import format_meal_type
 
 logger = logging.getLogger(__name__)
@@ -489,8 +474,7 @@ async def handle_photo(message: Message, bot: Bot) -> None:
         uid = await ml.ensure_user(telegram_id=message.from_user.id, username=message.from_user.username,
                                     first_name=message.from_user.first_name or "")
         file_id = message.photo[-1].file_id
-        tg_file = await bot.get_file(file_id)
-        photo_path = await download_telegram_photo(file_path=tg_file.file_path, bot_token=settings.telegram_bot_token)
+        photo_path = await download_telegram_photo(bot, file_id)
         if photo_path is None:
             await message.answer("Не удалось скачать фото."); return
         await ml.log_raw_message(user_id=uid, telegram_message_id=message.message_id,
@@ -565,11 +549,9 @@ async def handle_voice(message: Message, bot: Bot) -> None:
     """Transcribe voice message and process as text."""
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
-    # Download voice
+    # Download voice via bot (proxy-aware)
     file_id = message.voice.file_id
-    tg_file = await bot.get_file(file_id)
-
-    voice_bytes = await _download_voice(settings.telegram_bot_token, tg_file.file_path)
+    voice_bytes = await download_telegram_voice(bot, file_id)
     if voice_bytes is None:
         await message.answer("Не удалось скачать голосовое сообщение.")
         return
