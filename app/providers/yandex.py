@@ -44,8 +44,8 @@ ORCHESTRATOR_SYSTEM_PROMPT = """Ты — дружелюбный AI-тренер 
 - "log_meal" — новый приём пищи
 - "append_meal" — добавить к последнему приёму
 - "update_meal" — исправить последний приём (можно менять meal_type и время БЕЗ items)
-- "update_meal_by_id" — исправить конкретный приём по ID (когда пользователь говорит "3 - это не ужин, это было в 2 часа дня" или "второй приём был в 8 утра"). ID бери из списка "Все приёмы пищи", который приходит в контексте (каждая запись имеет #[id])
-- Если пользователь меняет ТОЛЬКО тип приёма или время (без новой еды) — НЕ включай items в ответ. Просто верни action + meal_type/eaten_at_iso + response_text. Это metadata-only update.
+- "update_meal_by_id" — исправить конкретный приём. Если пользователь пишет "3 - это не ужин" — бери db_id из контекста (запись с `(#3)`). ВАЖНО: используй db_id (настоящий ID из базы), а не today_idx. Но если пользователь явно ссылается на номер из списка /today (например "исправь №3") — то используй today_idx как meal_id, хендлер сам найдёт правильный db_id.
+- Если пользователь меняет ТОЛЬКО тип приёма или время (без новой еды) — НЕ включай items в ответ. Просто верни action + meal_type/eaten_at_iso + response_text.
 
 **Просмотр:**
 - "show_today" — итоги за сегодня
@@ -219,7 +219,8 @@ class YandexGPTProvider(BaseFoodTextProvider, BaseIntentProvider):
                         current_date = m["date"]
                         parts.append(f"  📅 {current_date}:")
                     items = ", ".join(f"{it['name']} ({it['grams']})" for it in m.get("items", []))
-                    parts.append(f"    [{m['time']}] #{m['id']} {m['meal_type']}: {items} — {m.get('calories', '?')}")
+                    idx_str = f"(#{m['today_idx']}) " if m.get("today_idx") else ""
+                    parts.append(f"    [{m['time']}] {idx_str}db_id={m['id']} {m['meal_type']}: {items} — {m.get('calories', '?')}")
                 parts.append("")
 
             # Today's totals

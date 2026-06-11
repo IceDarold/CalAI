@@ -96,15 +96,23 @@ async def _build_context(session, user_id: int, telegram_id: int) -> dict:
 
     if all_meals:
         ctx["all_meals"] = []
+        # Build today's index mapping: today_index -> db_id
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_idx = 1
         for m in all_meals:
             items = [{"name": it.name, "grams": f"{it.calories_min or '?'}"} for it in m.items]
-            ctx["all_meals"].append({
+            entry = {
                 "id": m.id, "date": m.eaten_at.strftime("%Y-%m-%d"),
                 "time": m.eaten_at.strftime("%H:%M"),
                 "meal_type": format_meal_type(m.meal_type), "items": items,
                 "calories": f"{m.calories_min}–{m.calories_max} ккал" if m.calories_min else "?",
                 "confidence": m.confidence,
-            })
+            }
+            # Add display index for today's meals (matches /today numbering)
+            if m.eaten_at >= today_start:
+                entry["today_idx"] = today_idx
+                today_idx += 1
+            ctx["all_meals"].append(entry)
 
     # Today's totals + remaining
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -400,6 +408,12 @@ async def handle_text(message: Message, bot: Bot) -> None:
 
                 from app.db.repositories import get_meal_by_id
                 meal = await get_meal_by_id(session, meal_id)
+                # If not found by DB id, try today's index from context
+                if (not meal or meal.user_id != uid) and ctx.get("all_meals"):
+                    for m in ctx["all_meals"]:
+                        if m.get("today_idx") == meal_id:
+                            meal = await get_meal_by_id(session, m["id"])
+                            break
                 if not meal or meal.user_id != uid:
                     await message.answer("Не могу найти эту запись.")
                     await session.commit(); return
@@ -457,6 +471,13 @@ async def handle_text(message: Message, bot: Bot) -> None:
                     await message.answer("Не понял какую запись исправить."); await session.commit(); return
                 from app.db.repositories import get_meal_by_id
                 meal = await get_meal_by_id(session, meal_id)
+                # Fallback: try today_idx if db_id not found
+                if (not meal or meal.user_id != uid) and ctx.get("all_meals"):
+                    for m in ctx["all_meals"]:
+                        if m.get("today_idx") == meal_id:
+                            meal_id = m["id"]
+                            meal = await get_meal_by_id(session, meal_id)
+                            break
                 if not meal or meal.user_id != uid:
                     await message.answer("Не могу найти эту запись."); await session.commit(); return
                 meal, _ = await ml.update_meal(meal_id, text, analysis)
