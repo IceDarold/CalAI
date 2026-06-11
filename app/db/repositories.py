@@ -48,9 +48,13 @@ async def save_meal(
     calories_max: int | None,
     protein_min_g: float | None,
     protein_max_g: float | None,
-    confidence: str,
-    status: str,
-    items_data: list[dict],
+    fat_min_g: float | None = None,
+    fat_max_g: float | None = None,
+    carbs_min_g: float | None = None,
+    carbs_max_g: float | None = None,
+    confidence: str = "medium",
+    status: str = "confirmed",
+    items_data: list[dict] | None = None,
     eaten_at: datetime.datetime | None = None,
 ) -> Meal:
     """Save a meal with its items."""
@@ -64,6 +68,10 @@ async def save_meal(
         calories_max=calories_max,
         protein_min_g=protein_min_g,
         protein_max_g=protein_max_g,
+        fat_min_g=fat_min_g,
+        fat_max_g=fat_max_g,
+        carbs_min_g=carbs_min_g,
+        carbs_max_g=carbs_max_g,
         confidence=confidence,
         status=status,
         eaten_at=eaten_at or datetime.datetime.utcnow(),
@@ -71,18 +79,22 @@ async def save_meal(
     session.add(meal)
     await session.flush()
 
-    for item_data in items_data:
-        item = MealItem(
-            meal_id=meal.id,
-            name=item_data["name"],
-            portion_text=item_data.get("portion_text"),
-            calories_min=item_data.get("calories_min"),
-            calories_max=item_data.get("calories_max"),
-            protein_min_g=item_data.get("protein_min_g"),
-            protein_max_g=item_data.get("protein_max_g"),
-            confidence=item_data.get("confidence", "medium"),
-        )
-        session.add(item)
+    if items_data:
+        for item_data in items_data:
+            item = MealItem(
+                meal_id=meal.id, name=item_data["name"],
+                portion_text=item_data.get("portion_text"),
+                calories_min=item_data.get("calories_min"),
+                calories_max=item_data.get("calories_max"),
+                protein_min_g=item_data.get("protein_min_g"),
+                protein_max_g=item_data.get("protein_max_g"),
+                fat_min_g=item_data.get("fat_min_g"),
+                fat_max_g=item_data.get("fat_max_g"),
+                carbs_min_g=item_data.get("carbs_min_g"),
+                carbs_max_g=item_data.get("carbs_max_g"),
+                confidence=item_data.get("confidence", "medium"),
+            )
+            session.add(item)
 
     await session.flush()
     # Refresh to load relationships (items) for immediate access
@@ -191,10 +203,10 @@ async def get_totals_for_date(
     )
     row = result.one()
     return {
-        "calories_min": int(row.cal_min_total),
-        "calories_max": int(row.cal_max_total),
-        "protein_min_g": float(row.prot_min_total),
-        "protein_max_g": float(row.prot_max_total),
+        "calories_min": int(row.cal_min_total), "calories_max": int(row.cal_max_total),
+        "protein_min_g": float(row.prot_min_total), "protein_max_g": float(row.prot_max_total),
+        "fat_min_g": float(row.fat_min_total), "fat_max_g": float(row.fat_max_total),
+        "carbs_min_g": float(row.carbs_min_total), "carbs_max_g": float(row.carbs_max_total),
         "meal_count": int(row.meal_count),
     }
 
@@ -211,30 +223,15 @@ async def get_today_totals(
 
     result = await session.execute(
         select(
-            func.coalesce(func.min(Meal.calories_min), 0).label("cal_min_sum"),
-            func.coalesce(func.max(Meal.calories_max), 0).label("cal_max_sum"),
-            func.coalesce(func.min(Meal.protein_min_g), 0.0).label("prot_min_sum"),
-            func.coalesce(func.max(Meal.protein_max_g), 0.0).label("prot_max_sum"),
-            func.count(Meal.id).label("meal_count"),
             func.coalesce(func.sum(Meal.calories_min), 0).label("cal_min_total"),
             func.coalesce(func.sum(Meal.calories_max), 0).label("cal_max_total"),
             func.coalesce(func.sum(Meal.protein_min_g), 0.0).label("prot_min_total"),
             func.coalesce(func.sum(Meal.protein_max_g), 0.0).label("prot_max_total"),
+            func.coalesce(func.sum(Meal.fat_min_g), 0.0).label("fat_min_total"),
+            func.coalesce(func.sum(Meal.fat_max_g), 0.0).label("fat_max_total"),
+            func.coalesce(func.sum(Meal.carbs_min_g), 0.0).label("carbs_min_total"),
+            func.coalesce(func.sum(Meal.carbs_max_g), 0.0).label("carbs_max_total"),
+            func.count(Meal.id).label("meal_count"),
         )
-        .where(
-            and_(
-                Meal.user_id == user_id,
-                Meal.eaten_at >= today_start_utc,
-                Meal.eaten_at < today_end_utc,
-                Meal.status == "confirmed",
-            )
-        )
+        .where(Meal.user_id == user_id, Meal.eaten_at >= today_start_utc, Meal.eaten_at < today_end_utc)
     )
-    row = result.one()
-    return {
-        "calories_min": int(row.cal_min_total),
-        "calories_max": int(row.cal_max_total),
-        "protein_min_g": float(row.prot_min_total),
-        "protein_max_g": float(row.prot_max_total),
-        "meal_count": int(row.meal_count),
-    }

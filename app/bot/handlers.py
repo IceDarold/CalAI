@@ -21,53 +21,77 @@ from app.utils.time import format_meal_type
 logger = logging.getLogger(__name__)
 router = Router()
 
-START_TEXT = """Привет! 👋 Я твой трекер питания.
+START_TEXT = """Привет! 👋 Я твой трекер питания с AI.
 
-Просто пиши мне, что ты съел, в свободной форме — я посчитаю калории и белок.
+Я считаю калории, белки, жиры и углеводы. Использую базу USDA из 4600+ продуктов.
 
-Ты можешь:
-• Указать время: "20 минут назад съел банан", "вчера в обед была паста"
-• Посмотреть любой день: "что я ел вчера?", "позавчера"
-• Исправить прошлое: "вчера в обед вместо курицы была индейка"
+Что я умею:
+• Записывать еду — просто опиши что съел
+• Анализировать фото еды (с GigaChat Vision)
+• Смотреть итоги за любой день
+• Ставить цель (похудеть/поддержание/набор)
+• Давать советы по питанию — "что перекусить?", "сколько белка ещё добрать?"
 
-Команды:
-/today — что я съел сегодня
-/undo — удалить последнюю запись
-/help — подсказки
+Расскажи о себе: рост, вес, возраст, цель.
+Например: "рост 180, вес 85, хочу похудеть до 78"
+Или просто начни записывать еду!
 
 Погнали! 💪"""
 
-HELP_TEXT = """Как это работает:
+HELP_TEXT = """Возможности:
 
-1. Просто напиши, что съел — я всё пойму и запишу
-2. Можешь указать время: "20 минут назад", "в 14:20", "вчера в обед"
-3. "и ещё X" — добавится к последнему приёму
-4. "нет, там было X" — исправлю запись
-5. "что я ел вчера?" — покажу любой день
-6. /today — итоги за сегодня
-7. /undo — удалить последнюю запись
+🍽 Запись еды
+• "съел гречку с курицей"
+• "20 минут назад перекусил яблоком"
+• "вчера в обед была паста с соусом"
 
-Я использую базу USDA для точных цифр. Если оценка неточная — уточни граммы, и я пересчитаю."""
+📊 Просмотр
+• /today — итоги сегодня
+• "что я ел вчера?"
+• "покажи статистику за неделю"
+
+✏️ Исправление
+• "нет, там было 200 грамм риса"
+• "вместо курицы была индейка"
+• /undo — удалить последнее
+
+🎯 Цели и профиль
+• "мой рост 180, вес 85, хочу похудеть"
+• "я девушка, 25 лет, 165 см, 60 кг, хочу набрать мышцы"
+
+💬 Советы
+• "что лучше перекусить?"
+• "сколько белка мне ещё нужно сегодня?"
+
+Бот использует AI для понимания твоих сообщений и базу USDA для точных цифр."""
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 async def _build_context(session, user_id: int, telegram_id: int) -> dict:
-    """Build context: all meals from the last 7 days with timestamps."""
-    from app.db.models import Meal, RawMessage
+    from app.db.models import Meal, RawMessage, User
     from sqlalchemy import select
+    from app.db.repositories import get_today_meals, get_today_totals
 
     ctx: dict = {}
 
-    # All meals from last 7 days (the LLM can filter by date)
+    # User profile
+    user = await session.get(User, user_id)
+    if user:
+        profile = {}
+        for f in ['height_cm', 'weight_kg', 'age', 'gender', 'goal',
+                   'target_kcal', 'target_protein_g', 'target_fat_g', 'target_carbs_g']:
+            val = getattr(user, f, None)
+            if val is not None:
+                profile[f] = val
+        if profile:
+            ctx["profile"] = profile
+
+    # All meals from last 7 days
     now = dt.datetime.utcnow()
     week_ago = now - dt.timedelta(days=7)
-
     result = await session.execute(
-        select(Meal)
-        .where(Meal.user_id == user_id, Meal.eaten_at >= week_ago)
-        .order_by(Meal.eaten_at.asc())
-    )
+        select(Meal).where(Meal.user_id == user_id, Meal.eaten_at >= week_ago).order_by(Meal.eaten_at.asc()))
     all_meals = result.scalars().all()
 
     if all_meals:
@@ -75,86 +99,85 @@ async def _build_context(session, user_id: int, telegram_id: int) -> dict:
         for m in all_meals:
             items = [{"name": it.name, "grams": f"{it.calories_min or '?'}"} for it in m.items]
             ctx["all_meals"].append({
-                "id": m.id,
-                "date": m.eaten_at.strftime("%Y-%m-%d"),
+                "id": m.id, "date": m.eaten_at.strftime("%Y-%m-%d"),
                 "time": m.eaten_at.strftime("%H:%M"),
-                "meal_type": format_meal_type(m.meal_type),
-                "items": items,
+                "meal_type": format_meal_type(m.meal_type), "items": items,
                 "calories": f"{m.calories_min}–{m.calories_max} ккал" if m.calories_min else "?",
                 "confidence": m.confidence,
             })
 
-    # Today's totals
+    # Today's totals + remaining
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_meals = [m for m in all_meals if m.eaten_at >= today_start]
     if today_meals:
-        total_cal_min = sum(m.calories_min or 0 for m in today_meals)
-        total_cal_max = sum(m.calories_max or 0 for m in today_meals)
-        total_prot_min = sum(m.protein_min_g or 0 for m in today_meals)
-        total_prot_max = sum(m.protein_max_g or 0 for m in today_meals)
+        t_cal = sum(m.calories_min or 0 for m in today_meals)
+        t_prot = sum(m.protein_min_g or 0 for m in today_meals)
+        t_fat = sum(m.fat_min_g or 0 for m in today_meals)
+        t_carbs = sum(m.carbs_min_g or 0 for m in today_meals)
         ctx["totals_today"] = {
-            "calories": f"{total_cal_min}–{total_cal_max} ккал",
-            "protein": f"{total_prot_min:.0f}–{total_prot_max:.0f} г",
+            "calories": f"{t_cal} ккал",
+            "protein": f"{t_prot:.0f} г",
+            "fat": f"{t_fat:.0f} г",
+            "carbs": f"{t_carbs:.0f} г",
         }
+        # Remaining to target
+        if user and user.target_kcal:
+            ctx["remaining"] = {
+                "kcal": max(0, user.target_kcal - t_cal),
+                "protein_g": max(0, (user.target_protein_g or 0) - t_prot),
+                "fat_g": max(0, (user.target_fat_g or 0) - t_fat),
+                "carbs_g": max(0, (user.target_carbs_g or 0) - t_carbs),
+            }
 
     # Recent messages
     result = await session.execute(
-        select(RawMessage).where(RawMessage.user_id == user_id).order_by(RawMessage.created_at.desc()).limit(15)
-    )
-    recent = list(result.scalars())
-    recent.reverse()
+        select(RawMessage).where(RawMessage.user_id == user_id).order_by(RawMessage.created_at.desc()).limit(15))
+    recent = list(result.scalars()); recent.reverse()
     ctx["history"] = [{"role": "user", "text": rm.text or "(фото)"} for rm in recent]
 
     return ctx
 
 
 def _parse_eaten_at(eaten_at_iso: str | None) -> dt.datetime | None:
-    """Parse LLM's eaten_at_iso into a UTC datetime, or use now."""
-    if not eaten_at_iso:
-        return None
+    if not eaten_at_iso: return None
     try:
         parsed = dt.datetime.fromisoformat(eaten_at_iso)
-        if parsed.tzinfo is None:
-            # Assume UTC if no timezone
-            parsed = parsed.replace(tzinfo=dt.timezone.utc)
-        return parsed.replace(tzinfo=None)  # store naive UTC in DB
-    except (ValueError, TypeError):
-        return None
+        if parsed.tzinfo is None: parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.replace(tzinfo=None)
+    except (ValueError, TypeError): return None
 
 
-def _inject_numbers(text: str, cal_min: int, cal_max: int, prot_min: float, prot_max: float,
-                    confidence: str) -> str:
-    cal = f"{cal_min}–{cal_max} ккал"
-    prot = f"{prot_min:.0f}–{prot_max:.0f} г белка"
+def _inject_numbers(text: str, analysis, confidence: str) -> str:
+    cal = f"{analysis.total_calories_min}–{analysis.total_calories_max} ккал"
+    prot = f"{analysis.total_protein_min_g:.0f}–{analysis.total_protein_max_g:.0f} г белка"
+    fat = f"{analysis.total_fat_min_g:.0f}–{analysis.total_fat_max_g:.0f} г жиров"
+    carbs = f"{analysis.total_carbs_min_g:.0f}–{analysis.total_carbs_max_g:.0f} г углеводов"
     note = "" if confidence == "high" else "Это диапазон — точный вес неизвестен. Уточни граммы, и я посчитаю точнее."
-    return text.replace("{{CALORIES}}", cal).replace("{{PROTEIN}}", prot).replace("{{RANGE_NOTE}}", note)
+    return text.replace("{{CALORIES}}", cal).replace("{{PROTEIN}}", prot).replace("{{FAT}}", fat).replace("{{CARBS}}", carbs).replace("{{RANGE_NOTE}}", note)
 
 
 def _format_meals(meals, totals: dict | None = None, date_label: str = "Сегодня") -> str:
-    if not meals:
-        return f"{date_label} нет записей. Напиши, что съел!"
-
+    if not meals: return f"{date_label} нет записей. Напиши, что съел!"
     lines = [f"{date_label}:\n"]
     for i, meal in enumerate(meals, 1):
         mt = format_meal_type(meal.meal_type)
         items_str = ", ".join(it.name for it in meal.items) if meal.items else "—"
         cal = f"{meal.calories_min}–{meal.calories_max} ккал" if meal.calories_min else ""
-        prot = f"{meal.protein_min_g:.0f}–{meal.protein_max_g:.0f} г белка" if meal.protein_min_g is not None else ""
+        prot = f"Б:{meal.protein_min_g:.0f}г" if meal.protein_min_g else ""
+        fat = f"Ж:{meal.fat_min_g:.0f}г" if meal.fat_min_g else ""
+        carbs = f"У:{meal.carbs_min_g:.0f}г" if meal.carbs_min_g else ""
+        macros = ", ".join(x for x in [prot, fat, carbs] if x)
         time_str = meal.eaten_at.strftime("%H:%M") if meal.eaten_at else ""
-        details = f" — {cal}, {prot}" if cal else ""
-        lines.append(f"{i}. [{time_str}] {mt.capitalize()} — {items_str}{details}")
-
-    if totals and totals.get("meal_count", 0) > 0:
-        lines.append(f"\nИтого: {totals['calories_min']}–{totals['calories_max']} ккал, "
-                     f"{totals['protein_min_g']:.0f}–{totals['protein_max_g']:.0f} г белка.")
+        lines.append(f"{i}. [{time_str}] {mt.capitalize()} — {items_str} | {cal} | {macros}")
+    if totals:
+        lines.append(f"\nИтого: {totals.get('calories', '?')} | "
+                     f"Б:{totals.get('protein_min_g', 0):.0f}г Ж:{totals.get('fat_min_g', 0):.0f}г У:{totals.get('carbs_min_g', 0):.0f}г")
     return "\n".join(lines)
 
 
 async def send_animated(message: Message, text: str, chunk_delay: float = 0.06) -> None:
     words = text.split()
-    if len(words) <= 8:
-        await message.answer(text)
-        return
+    if len(words) <= 8: await message.answer(text); return
     chunks = []
     for i in range(0, len(words), 3):
         chunk = " ".join(words[i : i + 3])
@@ -162,60 +185,57 @@ async def send_animated(message: Message, text: str, chunk_delay: float = 0.06) 
     sent = await message.answer(chunks[0] + " ▌")
     for c in chunks[1:]:
         await asyncio.sleep(chunk_delay)
-        try:
-            await sent.edit_text(c + " ▌")
-        except Exception:
-            pass
+        try: await sent.edit_text(c + " ▌")
+        except Exception: pass
     await asyncio.sleep(chunk_delay * 2)
-    try:
-        await sent.edit_text(text)
-    except Exception:
-        pass
+    try: await sent.edit_text(text)
+    except Exception: pass
 
 
-# ── Shared pipeline: LLM items → USDA search → calculator → FoodAnalysis ────
+# ── Nutrition pipeline ───────────────────────────────────────────────────────
 
 async def _run_nutrition_pipeline(session, result: dict):
     from app.schemas.food import ParsedFoodItem, Confidence as C, FoodAnalysis as FA, FoodItem as FI, MealType as MT
     from app.services.food_db import search_food
     from app.services.calculator import calculate_from_parsed
 
-    parsed = [
-        ParsedFoodItem(
-            name_ru=it.get("name_ru", it.get("name", "")),
-            name_en=it.get("name_en", it.get("name", "")),
-            grams=float(it.get("grams", 100)),
-            grams_confidence=it.get("grams_confidence", "medium"),
-            portion_text=it.get("portion_text", ""),
-        )
-        for it in result.get("items", [])
-    ]
+    parsed = [ParsedFoodItem(
+        name_ru=it.get("name_ru", it.get("name", "")),
+        name_en=it.get("name_en", it.get("name", "")),
+        grams=float(it.get("grams", 100)),
+        grams_confidence=it.get("grams_confidence", "medium"),
+        portion_text=it.get("portion_text", ""),
+    ) for it in result.get("items", [])]
 
     food_matches = []
     for pi in parsed:
         matches = await search_food(session, pi.name_en or pi.name_ru, limit=1)
         food_matches.append(matches[0] if matches else None)
 
-    parsed_dicts = [p.model_dump() for p in parsed]
-    calc = calculate_from_parsed(parsed_dicts, food_matches)
+    calc = calculate_from_parsed([p.model_dump() for p in parsed], food_matches)
 
     conf = C(result.get("confidence", "medium"))
-    meal_type = MT(result.get("meal_type", "unknown"))
+    mt = MT(result.get("meal_type", "unknown"))
 
-    items = [
-        FI(name=pi.name_ru or pi.name_en, portion_text=pi.portion_text or f"~{ci.grams:.0f} г",
-           calories_min=int(ci.kcal * 0.85), calories_max=int(ci.kcal * 1.15),
-           protein_min_g=round(ci.protein_g * 0.85, 1), protein_max_g=round(ci.protein_g * 1.15, 1),
-           confidence=C(ci.confidence))
-        for pi, ci in zip(parsed, calc.items)
-    ]
+    items = [FI(
+        name=pi.name_ru or pi.name_en, portion_text=pi.portion_text or f"~{ci.grams:.0f} г",
+        calories_min=int(ci.kcal * 0.85), calories_max=int(ci.kcal * 1.15),
+        protein_min_g=round(ci.protein_g * 0.85, 1), protein_max_g=round(ci.protein_g * 1.15, 1),
+        fat_min_g=round(ci.fat_g * 0.85, 1), fat_max_g=round(ci.fat_g * 1.15, 1),
+        carbs_min_g=round(ci.carbs_g * 0.85, 1), carbs_max_g=round(ci.carbs_g * 1.15, 1),
+        confidence=C(ci.confidence),
+    ) for pi, ci in zip(parsed, calc.items)]
 
     analysis = FA(
-        is_food=True, meal_type=meal_type, items=items,
+        is_food=True, meal_type=mt, items=items,
         total_calories_min=round(calc.total_kcal * 0.85),
         total_calories_max=round(calc.total_kcal * 1.15),
         total_protein_min_g=round(calc.total_protein_g * 0.85, 1),
         total_protein_max_g=round(calc.total_protein_g * 1.15, 1),
+        total_fat_min_g=round(calc.total_fat_g * 0.85, 1),
+        total_fat_max_g=round(calc.total_fat_g * 1.15, 1),
+        total_carbs_min_g=round(calc.total_carbs_g * 0.85, 1),
+        total_carbs_max_g=round(calc.total_carbs_g * 1.15, 1),
         confidence=conf, parsed_items=parsed,
     )
     return items, parsed, analysis
@@ -235,23 +255,21 @@ async def cmd_help(message: Message) -> None:
 async def cmd_today(message: Message, bot: Bot) -> None:
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
     async with async_session_factory() as session:
-        meal_logger = MealLogger(session)
-        user_id = await meal_logger.ensure_user(
-            telegram_id=message.from_user.id, username=message.from_user.username,
-            first_name=message.from_user.first_name or "")
+        ml = MealLogger(session)
+        uid = await ml.ensure_user(telegram_id=message.from_user.id, username=message.from_user.username,
+                                    first_name=message.from_user.first_name or "")
         from app.db.repositories import get_today_meals, get_today_totals
-        meals = await get_today_meals(session, user_id)
-        totals = await get_today_totals(session, user_id)
+        meals = await get_today_meals(session, uid)
+        totals = await get_today_totals(session, uid)
         await send_animated(message, _format_meals(meals, totals, "Сегодня"))
 
 @router.message(Command("undo"))
 async def cmd_undo(message: Message, bot: Bot) -> None:
     async with async_session_factory() as session:
-        meal_logger = MealLogger(session)
-        user_id = await meal_logger.ensure_user(
-            telegram_id=message.from_user.id, username=message.from_user.username,
-            first_name=message.from_user.first_name or "")
-        desc = await meal_logger.delete_last_meal(user_id)
+        ml = MealLogger(session)
+        uid = await ml.ensure_user(telegram_id=message.from_user.id, username=message.from_user.username,
+                                    first_name=message.from_user.first_name or "")
+        desc = await ml.delete_last_meal(uid)
         clear_last_meal(message.from_user.id)
         await message.answer(f"Убрал: {desc}." if desc else "Нечего удалять.")
         await session.commit()
@@ -259,16 +277,13 @@ async def cmd_undo(message: Message, bot: Bot) -> None:
 @router.message(Command("delete"))
 async def cmd_delete(message: Message, bot: Bot) -> None:
     args = message.text.strip().split()
-    if len(args) < 2 or not args[1].isdigit():
-        await message.answer("Напиши номер: /delete 3 (номер из /today)")
-        return
+    if len(args) < 2 or not args[1].isdigit(): await message.answer("Напиши номер: /delete 3"); return
     n = int(args[1])
     async with async_session_factory() as session:
-        meal_logger = MealLogger(session)
-        user_id = await meal_logger.ensure_user(
-            telegram_id=message.from_user.id, username=message.from_user.username,
-            first_name=message.from_user.first_name or "")
-        desc = await meal_logger.delete_meal_by_number(user_id, n)
+        ml = MealLogger(session)
+        uid = await ml.ensure_user(telegram_id=message.from_user.id, username=message.from_user.username,
+                                    first_name=message.from_user.first_name or "")
+        desc = await ml.delete_meal_by_number(uid, n)
         await message.answer(f"Убрал #{n}: {desc}." if desc else f"Запись #{n} не найдена.")
         await session.commit()
 
@@ -278,35 +293,27 @@ async def cmd_delete(message: Message, bot: Bot) -> None:
 @router.message(F.text)
 async def handle_text(message: Message, bot: Bot) -> None:
     text = message.text.strip() if message.text else ""
-    if not text:
-        await message.answer("Расскажи, что ты съел!")
-        return
+    if not text: await message.answer("Расскажи, что ты съел!"); return
 
     telegram_id = message.from_user.id
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
     async with async_session_factory() as session:
-        meal_logger = MealLogger(session)
-        user_id = await meal_logger.ensure_user(
-            telegram_id=telegram_id, username=message.from_user.username,
-            first_name=message.from_user.first_name or "")
+        ml = MealLogger(session)
+        uid = await ml.ensure_user(telegram_id=telegram_id, username=message.from_user.username,
+                                    first_name=message.from_user.first_name or "")
+        await ml.log_raw_message(user_id=uid, telegram_message_id=message.message_id, message_type="text", text=text)
 
-        await meal_logger.log_raw_message(user_id=user_id, telegram_message_id=message.message_id,
-                                          message_type="text", text=text)
+        ctx = await _build_context(session, uid, telegram_id)
 
-        ctx = await _build_context(session, user_id, telegram_id)
-
-        # ── LLM decision ──
+        # LLM decision
         from app.config import settings as s
         if s.ai_provider == "gigachat" and s.gigachat_credentials:
-            from app.providers.gigachat import GigaChatProvider
-            llm = GigaChatProvider()
+            from app.providers.gigachat import GigaChatProvider; llm = GigaChatProvider()
         elif s.ai_provider == "yandex" and s.yandex_api_key:
-            from app.providers.yandex import YandexGPTProvider
-            llm = YandexGPTProvider()
+            from app.providers.yandex import YandexGPTProvider; llm = YandexGPTProvider()
         else:
-            from app.providers.mock import MockProvider
-            llm = MockProvider()
+            from app.providers.mock import MockProvider; llm = MockProvider()
         result = await llm.orchestrate(text, ctx)
 
         action = result.get("action", "unknown")
@@ -316,29 +323,49 @@ async def handle_text(message: Message, bot: Bot) -> None:
 
         # ── Execute action ──
 
+        if action == "set_profile":
+            profile_data = result.get("profile", {})
+            if profile_data:
+                await ml.set_profile(uid, **profile_data)
+                user = await ml.get_user(uid)
+                resp = llm_response or "Профиль обновлён!"
+                if user and user.target_kcal:
+                    resp += f"\n\nТвоя цель: {user.target_kcal} ккал, Б:{user.target_protein_g}г Ж:{user.target_fat_g}г У:{user.target_carbs_g}г"
+                await send_animated(message, resp)
+            else:
+                await message.answer("Не понял твои данные. Напиши, например: «рост 180, вес 85, хочу похудеть».")
+            await session.commit(); return
+
+        if action == "give_advice":
+            await send_animated(message, llm_response or "Подумал над твоим вопросом, но не смог сформулировать ответ. Попробуй спросить иначе!")
+            await session.commit(); return
+
         if action == "show_today":
             from app.db.repositories import get_today_meals, get_today_totals
-            meals = await get_today_meals(session, user_id)
-            totals = await get_today_totals(session, user_id)
-            await send_animated(message, _format_meals(meals, totals, "Сегодня"))
+            meals = await get_today_meals(session, uid)
+            totals = await get_today_totals(session, uid)
+            resp = _format_meals(meals, totals, "Сегодня")
+            if ctx.get("remaining"):
+                r = ctx["remaining"]
+                resp += f"\n\nОсталось до цели: {r['kcal']} ккал, Б:{r['protein_g']:.0f}г Ж:{r['fat_g']:.0f}г У:{r['carbs_g']:.0f}г"
+            await send_animated(message, resp)
             await session.commit(); return
 
         if action == "show_date":
             date_str = result.get("date", "")
-            if not date_str:
-                from app.db.repositories import get_today_meals, get_today_totals
-                meals = await get_today_meals(session, user_id)
-                totals = await get_today_totals(session, user_id)
-                await send_animated(message, _format_meals(meals, totals, "Сегодня"))
-            else:
+            if date_str:
                 from app.db.repositories import get_meals_for_date
-                meals = await get_meals_for_date(session, user_id, date_str)
-                label = f"📅 {date_str}"
-                await send_animated(message, _format_meals(meals, None, label))
+                meals = await get_meals_for_date(session, uid, date_str)
+                await send_animated(message, _format_meals(meals, None, f"📅 {date_str}"))
+            else:
+                from app.db.repositories import get_today_meals, get_today_totals
+                meals = await get_today_meals(session, uid)
+                totals = await get_today_totals(session, uid)
+                await send_animated(message, _format_meals(meals, totals, "Сегодня"))
             await session.commit(); return
 
         if action == "delete_last":
-            desc = await meal_logger.delete_last_meal(user_id)
+            desc = await ml.delete_last_meal(uid)
             clear_last_meal(telegram_id)
             await message.answer(llm_response or (f"Убрал: {desc}." if desc else "Нечего удалять."))
             await session.commit(); return
@@ -351,77 +378,62 @@ async def handle_text(message: Message, bot: Bot) -> None:
             await message.answer(llm_response or "Я не совсем понял. Расскажи, что ты съел!")
             await session.commit(); return
 
-        # ── Actions with nutrition pipeline ──
-
+        # ── Food actions ──
         if action in ("log_meal", "append_meal", "update_meal", "update_meal_by_id"):
             items, parsed, analysis = await _run_nutrition_pipeline(session, result)
-
             if not parsed:
                 await message.answer("Не смог разобрать что за еда. Опиши подробнее!")
                 await session.commit(); return
 
-            # Parse eaten_at from LLM
             eaten_at = _parse_eaten_at(result.get("eaten_at_iso"))
 
             if action == "log_meal":
-                # Override meal's eaten_at if LLM provided it
-                meal, _ = await meal_logger.log_from_text(user_id, text, analysis)
-                if meal:
-                    if eaten_at:
-                        meal.eaten_at = eaten_at
-                    set_last_meal(telegram_id, meal.id)
+                meal, _ = await ml.log_from_text(uid, text, analysis, eaten_at)
+                if meal: set_last_meal(telegram_id, meal.id)
 
             elif action == "append_meal":
                 last_id = get_last_meal(telegram_id)
                 if last_id is None:
                     await message.answer("Не к чему добавлять. Расскажи, что съел, и я запишу как новый приём.")
                     await session.commit(); return
-                meal, _ = await meal_logger.append_to_meal(last_id, text, analysis)
+                meal, _ = await ml.append_to_meal(last_id, text, analysis)
                 if meal and meal.items:
-                    all_cal_min = sum(it.calories_min or 0 for it in meal.items)
-                    all_cal_max = sum(it.calories_max or 0 for it in meal.items)
-                    all_prot_min = sum(it.protein_min_g or 0 for it in meal.items)
-                    all_prot_max = sum(it.protein_max_g or 0 for it in meal.items)
-                    analysis.total_calories_min = all_cal_min
-                    analysis.total_calories_max = all_cal_max
-                    analysis.total_protein_min_g = all_prot_min
-                    analysis.total_protein_max_g = all_prot_max
+                    analysis.total_calories_min = sum(it.calories_min or 0 for it in meal.items)
+                    analysis.total_calories_max = sum(it.calories_max or 0 for it in meal.items)
+                    analysis.total_protein_min_g = sum(it.protein_min_g or 0 for it in meal.items)
+                    analysis.total_protein_max_g = sum(it.protein_max_g or 0 for it in meal.items)
+                    analysis.total_fat_min_g = sum(it.fat_min_g or 0 for it in meal.items)
+                    analysis.total_fat_max_g = sum(it.fat_max_g or 0 for it in meal.items)
+                    analysis.total_carbs_min_g = sum(it.carbs_min_g or 0 for it in meal.items)
+                    analysis.total_carbs_max_g = sum(it.carbs_max_g or 0 for it in meal.items)
 
             elif action == "update_meal":
                 last_id = get_last_meal(telegram_id)
                 if last_id is None:
-                    await message.answer("Нечего исправлять. Расскажи, что съел, и я запишу.")
-                    await session.commit(); return
-                meal, _ = await meal_logger.update_meal(last_id, text, analysis)
-                if meal and eaten_at:
-                    meal.eaten_at = eaten_at
+                    await message.answer("Нечего исправлять."); await session.commit(); return
+                meal, _ = await ml.update_meal(last_id, text, analysis)
+                if meal and eaten_at: meal.eaten_at = eaten_at
 
             elif action == "update_meal_by_id":
                 meal_id = result.get("meal_id")
                 if not meal_id:
-                    await message.answer("Не понял какую запись исправить. Уточни.")
-                    await session.commit(); return
+                    await message.answer("Не понял какую запись исправить."); await session.commit(); return
                 from app.db.repositories import get_meal_by_id
                 meal = await get_meal_by_id(session, meal_id)
-                if not meal or meal.user_id != user_id:
-                    await message.answer("Не могу найти эту запись.")
-                    await session.commit(); return
-                meal, _ = await meal_logger.update_meal(meal_id, text, analysis)
-                if meal and eaten_at:
-                    meal.eaten_at = eaten_at
+                if not meal or meal.user_id != uid:
+                    await message.answer("Не могу найти эту запись."); await session.commit(); return
+                meal, _ = await ml.update_meal(meal_id, text, analysis)
+                if meal and eaten_at: meal.eaten_at = eaten_at
 
-            # Format response
             items_str = ", ".join(it.name for it in items)
             response = _inject_numbers(
                 llm_response or f"Записал как {format_meal_type(analysis.meal_type.value)}: {{ITEMS}}. {{CALORIES}} {{RANGE_NOTE}}",
-                analysis.total_calories_min, analysis.total_calories_max,
-                analysis.total_protein_min_g, analysis.total_protein_max_g, llm_confidence,
+                analysis, llm_confidence,
             ).replace("{{ITEMS}}", items_str)
 
             await send_animated(message, response)
             await session.commit(); return
 
-        # Fallback
         await message.answer("Я не совсем понял. Расскажи, что ты съел!")
         await session.commit()
 
@@ -434,35 +446,25 @@ async def handle_photo(message: Message, bot: Bot) -> None:
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
     async with async_session_factory() as session:
-        meal_logger = MealLogger(session)
-        user_id = await meal_logger.ensure_user(
-            telegram_id=message.from_user.id, username=message.from_user.username,
-            first_name=message.from_user.first_name or "")
-
+        ml = MealLogger(session)
+        uid = await ml.ensure_user(telegram_id=message.from_user.id, username=message.from_user.username,
+                                    first_name=message.from_user.first_name or "")
         file_id = message.photo[-1].file_id
         tg_file = await bot.get_file(file_id)
-        photo_path = await download_telegram_photo(file_path=tg_file.file_path,
-                                                    bot_token=settings.telegram_bot_token)
-
+        photo_path = await download_telegram_photo(file_path=tg_file.file_path, bot_token=settings.telegram_bot_token)
         if photo_path is None:
-            await message.answer("Не удалось скачать фото. Попробуй ещё раз.")
-            return
-
-        await meal_logger.log_raw_message(user_id=user_id, telegram_message_id=message.message_id,
-                                          message_type="photo_with_caption" if caption else "photo",
-                                          text=caption, photo_path=str(photo_path))
+            await message.answer("Не удалось скачать фото."); return
+        await ml.log_raw_message(user_id=uid, telegram_message_id=message.message_id,
+                                  message_type="photo_with_caption" if caption else "photo",
+                                  text=caption, photo_path=str(photo_path))
 
         analyzer = FoodAnalyzer()
         if not analyzer.has_vision:
-            await message.answer(
-                "Фото сохранил, но vision-модель пока не настроена. "
-                "Опиши, что там было, и я запишу калории."
-            )
+            await message.answer("Фото сохранил, но vision-модель пока не настроена. Опиши, что там было, и я запишу.")
             await session.commit(); return
 
         analysis = await analyzer.analyze_photo(str(photo_path), caption)
-        meal, _ = await meal_logger.log_from_photo(user_id, str(photo_path), caption, analysis)
-        if meal:
-            set_last_meal(message.from_user.id, meal.id)
-        await send_animated(message, "Записал! (анализ фото пока в тестовом режиме)")
+        meal, _ = await ml.log_from_photo(uid, str(photo_path), caption, analysis)
+        if meal: set_last_meal(message.from_user.id, meal.id)
+        await send_animated(message, "Проанализировал фото и записал!")
         await session.commit()
