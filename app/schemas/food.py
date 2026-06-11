@@ -31,10 +31,20 @@ class ParsedFoodItem(BaseModel):
     grams: float = 100
     grams_confidence: str = "medium"
     portion_text: str = ""
+    # Manual nutrition — if user provided exact values, skip USDA lookup
+    manual_kcal: float | None = None
+    manual_protein_g: float | None = None
+    manual_fat_g: float | None = None
+    manual_carbs_g: float | None = None
 
     @property
     def name(self) -> str:
         return self.name_ru or self.name_en
+
+    @property
+    def is_manual(self) -> bool:
+        """True if user provided nutrition values manually — skip USDA."""
+        return self.manual_kcal is not None
 
 
 class FoodItem(BaseModel):

@@ -40,7 +40,15 @@ def calculate_from_parsed(
             grams = 100
             questions.append(f"Сколько грамм {parsed.get('name', '')}?")
 
-        if match:
+        # Manual nutrition — user provided exact values, skip USDA
+        manual_kcal = parsed.get("manual_kcal")
+        if manual_kcal is not None:
+            kcal = manual_kcal
+            protein = parsed.get("manual_protein_g") or 0
+            fat = parsed.get("manual_fat_g") or 0
+            carbs = parsed.get("manual_carbs_g") or 0
+            conf = "high"; s = 3  # user-provided = high confidence
+        elif match:
             kcal = match["kcal_per_100g"] * grams / 100
             protein = match["protein_per_100g"] * grams / 100
             fat = match["fat_per_100g"] * grams / 100

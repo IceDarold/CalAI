@@ -205,6 +205,10 @@ async def _run_nutrition_pipeline(session, result: dict):
         grams=float(it.get("grams", 100)),
         grams_confidence=it.get("grams_confidence", "medium"),
         portion_text=it.get("portion_text", ""),
+        manual_kcal=it.get("manual_kcal"),
+        manual_protein_g=it.get("manual_protein_g"),
+        manual_fat_g=it.get("manual_fat_g"),
+        manual_carbs_g=it.get("manual_carbs_g"),
     ) for it in result.get("items", [])]
 
     food_matches = []
@@ -457,6 +461,55 @@ async def handle_photo(message: Message, bot: Bot) -> None:
         await ml.log_raw_message(user_id=uid, telegram_message_id=message.message_id,
                                   message_type="photo_with_caption" if caption else "photo",
                                   text=caption, photo_path=str(photo_path))
+
+        # Detect: label or food?
+        is_label = False
+        if caption:
+            label_keywords = ["этикетк", "упаковк", "состав", "label", "back", "nutrition", "пищев", "кбжу", "калорийн"]
+            if any(kw in caption.lower() for kw in label_keywords):
+                is_label = True
+
+        from app.config import settings as s
+
+        if is_label and s.ai_provider == "gigachat" and s.gigachat_credentials:
+            # Analyze nutrition label via GigaChat Vision
+            from app.providers.gigachat import GigaChatProvider
+            gc = GigaChatProvider()
+            label_data = await gc.analyze_label_photo(str(photo_path))
+
+            if label_data.get("is_label"):
+                # Build manual items from label data
+                kcal = label_data.get("kcal_per_100g", 0)
+                prot = label_data.get("protein_per_100g", 0)
+                fat = label_data.get("fat_per_100g", 0)
+                carbs = label_data.get("carbs_per_100g", 0)
+                serving = label_data.get("serving_size_g", 100)
+                name_ru = label_data.get("name_ru", "продукт с этикетки")
+                name_en = label_data.get("name_en", name_ru)
+
+                from app.schemas.food import ParsedFoodItem, Confidence as C, FoodAnalysis as FA, FoodItem as FI, MealType as MT
+                parsed = [ParsedFoodItem(
+                    name_ru=name_ru, name_en=name_en, grams=serving, grams_confidence="high",
+                    portion_text=f"с этикетки, порция {serving} г",
+                    manual_kcal=kcal, manual_protein_g=prot, manual_fat_g=fat, manual_carbs_g=carbs,
+                )]
+                analysis = FA(is_food=True, meal_type=MT("snack"), items=[
+                    FI(name=name_ru, portion_text=f"{serving} г", calories_min=int(kcal*0.95),
+                       calories_max=int(kcal*1.05), protein_min_g=prot*0.95, protein_max_g=prot*1.05,
+                       fat_min_g=fat*0.95, fat_max_g=fat*1.05, carbs_min_g=carbs*0.95, carbs_max_g=carbs*1.05,
+                       confidence=C("high"))
+                ], total_calories_min=int(kcal*0.95), total_calories_max=int(kcal*1.05),
+                   total_protein_min_g=prot*0.95, total_protein_max_g=prot*1.05,
+                   total_fat_min_g=fat*0.95, total_fat_max_g=fat*1.05,
+                   total_carbs_min_g=carbs*0.95, total_carbs_max_g=carbs*1.05,
+                   confidence=C("high"), parsed_items=parsed)
+                meal, _ = await ml.log_from_photo(uid, str(photo_path), caption, analysis)
+                if meal: set_last_meal(message.from_user.id, meal.id)
+                await send_animated(message, f"Прочитал этикетку: {name_ru}, {serving} г — {kcal} ккал, Б:{prot:.0f}г Ж:{fat:.0f}г У:{carbs:.0f}г")
+                await session.commit(); return
+            else:
+                # Not a label — fall through to food analysis
+                pass
 
         analyzer = FoodAnalyzer()
         if not analyzer.has_vision:
