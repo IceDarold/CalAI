@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 GIGACHAT_AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
 GIGACHAT_API_URL = "https://gigachat.devices.sberbank.ru/api/v1"
 
+import uuid as _uuid
+
 # ── Reuse the same orchestrator prompt from YandexGPT ───────────────────────
 from app.providers.yandex import ORCHESTRATOR_SYSTEM_PROMPT
 
@@ -106,9 +108,12 @@ class GigaChatProvider(BaseFoodTextProvider, BaseIntentProvider, BaseVisionProvi
                     "Authorization": f"Basic {auth_header}",
                     "Content-Type": "application/x-www-form-urlencoded",
                     "Accept": "application/json",
-                    "RqUID": "calai-bot-request",
+                    "RqUID": str(_uuid.uuid4()),
                 },
-                data={"scope": "GIGACHAT_API_PERS"},
+                data={
+                    "grant_type": "client_credentials",
+                    "scope": "GIGACHAT_API_PERS",
+                },
             )
             resp.raise_for_status()
             data = resp.json()
@@ -319,7 +324,11 @@ class GigaChatProvider(BaseFoodTextProvider, BaseIntentProvider, BaseVisionProvi
         async with httpx.AsyncClient(timeout=90, verify=False) as client:
             resp = await client.post(
                 f"{GIGACHAT_API_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "RqUID": str(_uuid.uuid4()),
+                },
                 json=body,
             )
             resp.raise_for_status()
@@ -352,7 +361,11 @@ class GigaChatProvider(BaseFoodTextProvider, BaseIntentProvider, BaseVisionProvi
         async with httpx.AsyncClient(timeout=90, verify=False) as client:
             resp = await client.post(
                 f"{GIGACHAT_API_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "RqUID": str(_uuid.uuid4()),
+                },
                 json=body,
             )
             resp.raise_for_status()
