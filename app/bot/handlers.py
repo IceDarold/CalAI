@@ -15,7 +15,22 @@ from app.services.food_analyzer import FoodAnalyzer
 from app.services.meal_logger import (
     MealLogger, get_last_meal, set_last_meal, clear_last_meal,
 )
+import httpx
+
 from app.utils.files import download_telegram_photo
+
+
+async def _download_voice(bot_token: str, file_path: str) -> bytes | None:
+    """Download voice message bytes from Telegram."""
+    url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.content
+    except Exception as e:
+        logger.error(f"Voice download failed: {e}")
+        return None
 from app.utils.time import format_meal_type
 
 logger = logging.getLogger(__name__)
@@ -540,4 +555,104 @@ async def handle_photo(message: Message, bot: Bot) -> None:
         meal, _ = await ml.log_from_photo(uid, str(photo_path), caption, analysis)
         if meal: set_last_meal(message.from_user.id, meal.id)
         await send_animated(message, "Проанализировал фото и записал!")
+        await session.commit()
+
+
+# ── Voice handler ───────────────────────────────────────────────────────────
+
+@router.message(F.voice)
+async def handle_voice(message: Message, bot: Bot) -> None:
+    """Transcribe voice message and process as text."""
+    await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
+    # Download voice
+    file_id = message.voice.file_id
+    tg_file = await bot.get_file(file_id)
+
+    voice_bytes = await _download_voice(settings.telegram_bot_token, tg_file.file_path)
+    if voice_bytes is None:
+        await message.answer("Не удалось скачать голосовое сообщение.")
+        return
+
+    # Transcribe
+    from app.providers.speech import get_stt_provider
+    stt = get_stt_provider()
+    text = await stt.transcribe(voice_bytes)
+
+    if not text:
+        await message.answer("Не удалось распознать речь. Напиши текстом!")
+        return
+
+    # Acknowledge transcription
+    await message.answer(f"🎤 *{text}*", parse_mode="Markdown")
+
+    # Feed transcribed text into the normal LLM pipeline
+    # (reuse the text handler logic by faking a text message context)
+    async with async_session_factory() as session:
+        ml = MealLogger(session)
+        uid = await ml.ensure_user(
+            telegram_id=message.from_user.id,
+            username=message.from_user.username,
+            first_name=message.from_user.first_name or "",
+        )
+
+        await ml.log_raw_message(
+            user_id=uid, telegram_message_id=message.message_id,
+            message_type="text", text=f"[voice] {text}",
+        )
+
+        ctx = await _build_context(session, uid, message.from_user.id)
+
+        from app.config import settings as s
+        if s.ai_provider == "gigachat" and s.gigachat_credentials:
+            from app.providers.gigachat import GigaChatProvider; llm = GigaChatProvider()
+        elif s.ai_provider == "yandex" and s.yandex_api_key:
+            from app.providers.yandex import YandexGPTProvider; llm = YandexGPTProvider()
+        else:
+            from app.providers.mock import MockProvider; llm = MockProvider()
+        result = await llm.orchestrate(text, ctx)
+
+        action = result.get("action", "unknown")
+        llm_response = result.get("response_text", "")
+        llm_confidence = result.get("confidence", "medium")
+        logger.info(f"Voice orchestrator: action={action}")
+
+        # Reuse the same action handling as handle_text — simplified for voice
+        if action == "show_today":
+            from app.db.repositories import get_today_meals, get_today_totals
+            meals = await get_today_meals(session, uid)
+            totals = await get_today_totals(session, uid)
+            await send_animated(message, _format_meals(meals, totals, "Сегодня"))
+        elif action in ("log_meal", "append_meal", "update_meal"):
+            items, parsed, analysis = await _run_nutrition_pipeline(session, result)
+            if parsed:
+                eaten_at = _parse_eaten_at(result.get("eaten_at_iso"))
+                if action == "log_meal":
+                    meal, _ = await ml.log_from_text(uid, text, analysis, eaten_at)
+                    if meal: set_last_meal(message.from_user.id, meal.id)
+                elif action == "append_meal":
+                    last_id = get_last_meal(message.from_user.id)
+                    if last_id:
+                        meal, _ = await ml.append_to_meal(last_id, text, analysis)
+                elif action == "update_meal":
+                    last_id = get_last_meal(message.from_user.id)
+                    if last_id:
+                        meal, _ = await ml.update_meal(last_id, text, analysis)
+                        if meal and eaten_at: meal.eaten_at = eaten_at
+
+                items_str = ", ".join(it.name for it in items)
+                response = _inject_numbers(
+                    llm_response or f"Записал: {{ITEMS}}. {{CALORIES}} {{RANGE_NOTE}}",
+                    analysis, llm_confidence,
+                ).replace("{{ITEMS}}", items_str)
+                await send_animated(message, response)
+            else:
+                await message.answer("Не смог разобрать что за еда. Опиши подробнее!")
+        elif action == "give_advice":
+            await send_animated(message, llm_response or "Не смог сформулировать ответ.")
+        elif action in ("unknown", "help"):
+            await message.answer(llm_response or "Расскажи, что ты съел!")
+        else:
+            await message.answer(llm_response or "Записал!")
+
         await session.commit()
