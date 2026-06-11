@@ -238,6 +238,11 @@ class YandexGPTProvider(BaseFoodTextProvider, BaseIntentProvider):
             parts.append("Контекст: это первое сообщение, истории пока нет.")
             parts.append("")
 
+        if context.get("reply_to"):
+            parts.append(f"Пользователь ОТВЕТИЛ на это сообщение бота: \"{context['reply_to'][:300]}\"")
+            parts.append("Это значит что его текущее сообщение относится именно к этому сообщению.")
+            parts.append("")
+
         parts.append(f"Текущее время (UTC): {dt.datetime.utcnow().strftime('%Y-%m-%dT%H:%M')}")
         parts.append("")
 

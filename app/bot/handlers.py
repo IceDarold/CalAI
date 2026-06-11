@@ -310,6 +310,10 @@ async def handle_text(message: Message, bot: Bot) -> None:
 
         ctx = await _build_context(session, uid, telegram_id)
 
+        # If replying to a message, add that context
+        if message.reply_to_message and message.reply_to_message.text:
+            ctx["reply_to"] = message.reply_to_message.text[:500]
+
         # LLM decision
         from app.config import settings as s
         if s.ai_provider == "gigachat" and s.gigachat_credentials:
