@@ -559,6 +559,9 @@ async def handle_voice(message: Message, bot: Bot) -> None:
     # Transcribe
     from app.providers.speech import get_stt_provider
     stt = get_stt_provider()
+    if stt is None:
+        await message.answer("Распознавание речи не настроено. Напиши текстом!")
+        return
     text = await stt.transcribe(voice_bytes)
 
     if not text:
