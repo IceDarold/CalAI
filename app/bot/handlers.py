@@ -401,21 +401,21 @@ async def handle_text(message: Message, bot: Bot) -> None:
 
             # ── Metadata-only update: no items, just changing type/time ──
             if action in ("update_meal", "update_meal_by_id") and not items_list:
-                meal_id = result.get("meal_id") if action == "update_meal_by_id" else get_last_meal(telegram_id)
-                if not meal_id:
+                raw_id = result.get("meal_id") if action == "update_meal_by_id" else get_last_meal(telegram_id)
+                if not raw_id:
                     await message.answer("Не понял какую запись исправить.")
                     await session.commit(); return
 
                 from app.db.repositories import get_meal_by_id
-                meal = await get_meal_by_id(session, meal_id)
-                # If not found by DB id, try today's index from context
+                meal = await get_meal_by_id(session, raw_id)
+                # Resolve via today_idx if needed
                 if (not meal or meal.user_id != uid) and ctx.get("all_meals"):
                     for m in ctx["all_meals"]:
-                        if m.get("today_idx") == meal_id:
+                        if m.get("today_idx") == raw_id or m["id"] == raw_id:
                             meal = await get_meal_by_id(session, m["id"])
                             break
                 if not meal or meal.user_id != uid:
-                    await message.answer("Не могу найти эту запись.")
+                    await message.answer(f"Не могу найти запись #{raw_id}.")
                     await session.commit(); return
 
                 new_type = result.get("meal_type")
@@ -466,20 +466,24 @@ async def handle_text(message: Message, bot: Bot) -> None:
                 if meal and eaten_at: meal.eaten_at = eaten_at
 
             elif action == "update_meal_by_id":
-                meal_id = result.get("meal_id")
-                if not meal_id:
+                raw_id = result.get("meal_id")
+                if not raw_id:
                     await message.answer("Не понял какую запись исправить."); await session.commit(); return
+
                 from app.db.repositories import get_meal_by_id
+                # Resolve: raw_id might be today_idx (1,2,3) or actual db_id
+                meal_id = raw_id
                 meal = await get_meal_by_id(session, meal_id)
-                # Fallback: try today_idx if db_id not found
+                # If not found or small number (likely today_idx), try context lookup
                 if (not meal or meal.user_id != uid) and ctx.get("all_meals"):
                     for m in ctx["all_meals"]:
-                        if m.get("today_idx") == meal_id:
+                        if m.get("today_idx") == raw_id or m["id"] == raw_id:
                             meal_id = m["id"]
                             meal = await get_meal_by_id(session, meal_id)
                             break
                 if not meal or meal.user_id != uid:
-                    await message.answer("Не могу найти эту запись."); await session.commit(); return
+                    await message.answer(f"Не могу найти запись #{raw_id}.")
+                    await session.commit(); return
                 meal, _ = await ml.update_meal(meal_id, text, analysis)
                 if meal and eaten_at: meal.eaten_at = eaten_at
 

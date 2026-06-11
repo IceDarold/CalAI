@@ -44,7 +44,7 @@ ORCHESTRATOR_SYSTEM_PROMPT = """Ты — дружелюбный AI-тренер 
 - "log_meal" — новый приём пищи
 - "append_meal" — добавить к последнему приёму
 - "update_meal" — исправить последний приём (можно менять meal_type и время БЕЗ items)
-- "update_meal_by_id" — исправить конкретный приём. Если пользователь пишет "3 - это не ужин" — бери db_id из контекста (запись с `(#3)`). ВАЖНО: используй db_id (настоящий ID из базы), а не today_idx. Но если пользователь явно ссылается на номер из списка /today (например "исправь №3") — то используй today_idx как meal_id, хендлер сам найдёт правильный db_id.
+- "update_meal_by_id" — исправить конкретный приём. Когда пользователь говорит "3 - это не ужин" или "вот эту" (reply на конкретную запись) — посмотри на номер #N в контексте и используй его как meal_id. Хендлер сам найдёт правильную запись в базе.
 - Если пользователь меняет ТОЛЬКО тип приёма или время (без новой еды) — НЕ включай items в ответ. Просто верни action + meal_type/eaten_at_iso + response_text.
 
 **Просмотр:**
@@ -219,8 +219,8 @@ class YandexGPTProvider(BaseFoodTextProvider, BaseIntentProvider):
                         current_date = m["date"]
                         parts.append(f"  📅 {current_date}:")
                     items = ", ".join(f"{it['name']} ({it['grams']})" for it in m.get("items", []))
-                    idx_str = f"(#{m['today_idx']}) " if m.get("today_idx") else ""
-                    parts.append(f"    [{m['time']}] {idx_str}db_id={m['id']} {m['meal_type']}: {items} — {m.get('calories', '?')}")
+                    idx_str = f"#{m['today_idx']} " if m.get("today_idx") else f"id={m['id']} "
+                    parts.append(f"    [{m['time']}] {idx_str}{m['meal_type']}: {items} — {m.get('calories', '?')}")
                 parts.append("")
 
             # Today's totals
