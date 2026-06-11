@@ -135,6 +135,70 @@ async def get_today_meals(
     return result.scalars().all()
 
 
+async def get_meals_for_date(
+    session: AsyncSession,
+    user_id: int,
+    date_str: str,  # "YYYY-MM-DD"
+    tz_offset_hours: int = 0,
+) -> Sequence[Meal]:
+    """Get all meals for a specific date."""
+    try:
+        date = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return []
+
+    start_utc = date - datetime.timedelta(hours=tz_offset_hours)
+    end_utc = start_utc + datetime.timedelta(days=1)
+
+    result = await session.execute(
+        select(Meal)
+        .where(Meal.user_id == user_id, Meal.eaten_at >= start_utc, Meal.eaten_at < end_utc)
+        .order_by(Meal.eaten_at.asc())
+    )
+    return result.scalars().all()
+
+
+async def get_meal_by_id(session: AsyncSession, meal_id: int) -> Meal | None:
+    """Get a single meal by its ID."""
+    result = await session.execute(select(Meal).where(Meal.id == meal_id))
+    return result.scalar_one_or_none()
+
+
+async def get_totals_for_date(
+    session: AsyncSession,
+    user_id: int,
+    date_str: str,
+    tz_offset_hours: int = 0,
+) -> dict:
+    """Get aggregated totals for a specific date."""
+    try:
+        date = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return {"calories_min": 0, "calories_max": 0, "protein_min_g": 0.0, "protein_max_g": 0.0, "meal_count": 0}
+
+    start_utc = date - datetime.timedelta(hours=tz_offset_hours)
+    end_utc = start_utc + datetime.timedelta(days=1)
+
+    result = await session.execute(
+        select(
+            func.coalesce(func.sum(Meal.calories_min), 0).label("cal_min_total"),
+            func.coalesce(func.sum(Meal.calories_max), 0).label("cal_max_total"),
+            func.coalesce(func.sum(Meal.protein_min_g), 0.0).label("prot_min_total"),
+            func.coalesce(func.sum(Meal.protein_max_g), 0.0).label("prot_max_total"),
+            func.count(Meal.id).label("meal_count"),
+        )
+        .where(Meal.user_id == user_id, Meal.eaten_at >= start_utc, Meal.eaten_at < end_utc)
+    )
+    row = result.one()
+    return {
+        "calories_min": int(row.cal_min_total),
+        "calories_max": int(row.cal_max_total),
+        "protein_min_g": float(row.prot_min_total),
+        "protein_max_g": float(row.prot_max_total),
+        "meal_count": int(row.meal_count),
+    }
+
+
 async def get_today_totals(
     session: AsyncSession,
     user_id: int,
