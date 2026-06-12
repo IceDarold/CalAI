@@ -25,6 +25,9 @@ class User(Base):
     age: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gender: Mapped[str | None] = mapped_column(String(10), nullable=True)  # male/female
 
+    # Context
+    last_meal_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # for "и ещё" chaining
+
     # Goals
     goal: Mapped[str | None] = mapped_column(String(20), nullable=True)  # cut/maintain/bulk
     target_kcal: Mapped[int | None] = mapped_column(Integer, nullable=True)

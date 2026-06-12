@@ -36,6 +36,8 @@ _MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN target_protein_g INTEGER",
     "ALTER TABLE users ADD COLUMN target_fat_g INTEGER",
     "ALTER TABLE users ADD COLUMN target_carbs_g INTEGER",
+    # last_meal_id for "и ещё" chaining (survives restart)
+    "ALTER TABLE users ADD COLUMN last_meal_id INTEGER",
 ]
 
 
