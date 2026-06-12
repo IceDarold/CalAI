@@ -427,10 +427,29 @@ async def handle_photo(message: Message, bot: Bot) -> None:
                 await message.answer("Фото сохранил, но vision-модель пока не настроена. Опиши, что там было, и я запишу.")
                 await session.commit(); return
 
+            # Vision → parse items → USDA lookup → calculator → response
             analysis = await get_vision_provider().analyze_food_photo(str(photo_path), caption)
-            meal, _ = await ml.log_from_photo(uid, str(photo_path), caption, analysis)
+            if not analysis.is_food or not analysis.parsed_items:
+                await message.answer("Не похоже на еду. Я ничего не записал.")
+                await session.commit(); return
+
+            # Run nutrition pipeline for the vision-parsed items
+            from app.services.nutrition import run_nutrition_pipeline
+            fake_result = {
+                "items": [pi.model_dump() for pi in analysis.parsed_items],
+                "meal_type": analysis.meal_type.value,
+                "confidence": analysis.confidence.value,
+            }
+            items, parsed, enriched = await run_nutrition_pipeline(session, fake_result)
+            meal, _ = await ml.log_from_text(uid, caption or "фото еды", enriched)
             if meal: await ml.set_last_meal_id(uid, meal.id)
-            await send_animated(message, "Проанализировал фото и записал!")
+
+            items_str = ", ".join(it.name for it in items)
+            response = _inject_numbers(
+                f"Записал: {{ITEMS}}. {{CALORIES}} {{RANGE_NOTE}}",
+                enriched, analysis.confidence.value, items_str,
+            )
+            await send_animated(message, response)
             await session.commit()
         except Exception as e:
             logger.error(f"Photo handler error: {e}", exc_info=True)
