@@ -137,6 +137,44 @@ class GigaChatProvider(BaseFoodTextProvider, BaseIntentProvider, BaseVisionProvi
             logger.error(f"GigaChat orchestrator failed: {e}")
             return {"action": "unknown", "items": [], "confidence": "low", "response_text": "", "_error": str(e)}
 
+    async def orchestrate_with_photo(self, text: str, context: dict | None, photo_path: str) -> dict:
+        """Orchestrator WITH vision — photo + full context → action + items + response_text.
+
+        Same prompt and context as text orchestrator, but the LLM sees the photo.
+        Returns the same {action, items, response_text, ...} format.
+        """
+        from app.providers.context_format import format_context_for_llm
+        user_message = format_context_for_llm(context, text)
+
+        photo = Path(photo_path)
+        if not photo.exists():
+            return {"action": "unknown", "items": [], "confidence": "low",
+                    "response_text": "", "_error": "photo file not found"}
+
+        try:
+            token = await self._ensure_token()
+
+            # Upload photo
+            async with httpx.AsyncClient(timeout=60, verify=False) as client:
+                with open(photo_path, "rb") as f:
+                    upload_resp = await client.post(
+                        f"{GIGACHAT_API_URL}/files",
+                        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                        files={"file": (photo.name, f, "image/jpeg")},
+                    )
+                upload_resp.raise_for_status()
+                file_id = upload_resp.json()["id"]
+
+            # Chat with photo attached to user message
+            raw = await self._chat_completion_with_attachment(
+                ORCHESTRATOR_SYSTEM_PROMPT, user_message, file_id, json_mode=True
+            )
+            return self._parse_raw_json(raw)
+        except Exception as e:
+            logger.error(f"Orchestrator with photo failed: {e}")
+            return {"action": "unknown", "items": [], "confidence": "low",
+                    "response_text": "", "_error": str(e)}
+
     # ── Vision: photo analysis ───────────────────────────────────────────
 
     async def analyze_food_photo(self, photo_path: str, caption: str | None = None) -> FoodAnalysis:

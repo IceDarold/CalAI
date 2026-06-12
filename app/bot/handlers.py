@@ -387,100 +387,30 @@ async def handle_photo(message: Message, bot: Bot) -> None:
                                       message_type="photo_with_caption" if caption else "photo",
                                       text=caption, photo_path=str(photo_path))
 
-            # Label detection
-            is_label = caption and any(kw in caption.lower() for kw in
-                ["этикетк", "упаковк", "состав", "label", "nutrition", "пищев", "кбжу", "калорийн"])
-
+            # Build context + let the orchestrator (with vision) decide everything
             s = settings
-            if is_label and s.ai_provider == "gigachat" and s.gigachat_credentials:
-                from app.providers.gigachat import GigaChatProvider
-                gc = GigaChatProvider()
-                label_data = await gc.analyze_label_photo(str(photo_path))
-                if label_data.get("is_label"):
-                    kcal = label_data.get("kcal_per_100g", 0)
-                    prot = label_data.get("protein_per_100g", 0); fat = label_data.get("fat_per_100g", 0)
-                    carbs = label_data.get("carbs_per_100g", 0); serving = label_data.get("serving_size_g", 100)
-                    name_ru = label_data.get("name_ru", "продукт с этикетки")
-                    from app.services.nutrition import apply_range
-                    cal_lo, cal_hi = apply_range(kcal, is_exact=True)
-                    parsed = [ParsedFoodItem(name_ru=name_ru, name_en=name_ru, grams=serving,
-                                grams_confidence="high", portion_text=f"с этикетки, порция {serving} г",
-                                manual_kcal=kcal, manual_protein_g=prot, manual_fat_g=fat, manual_carbs_g=carbs)]
-                    analysis = FA(is_food=True, meal_type=MT("snack"), items=[
-                        FI(name=name_ru, portion_text=f"{serving} г", calories_min=cal_lo, calories_max=cal_hi,
-                           protein_min_g=prot*0.95, protein_max_g=prot*1.05,
-                           fat_min_g=fat*0.95, fat_max_g=fat*1.05,
-                           carbs_min_g=carbs*0.95, carbs_max_g=carbs*1.05, confidence=C("high"))
-                    ], total_calories_min=cal_lo, total_calories_max=cal_hi,
-                       total_protein_min_g=prot*0.95, total_protein_max_g=prot*1.05,
-                       total_fat_min_g=fat*0.95, total_fat_max_g=fat*1.05,
-                       total_carbs_min_g=carbs*0.95, total_carbs_max_g=carbs*1.05,
-                       confidence=C("high"), parsed_items=parsed)
-                    meal, _ = await ml.log_from_photo(uid, str(photo_path), caption, analysis)
-                    if meal: await ml.set_last_meal_id(uid, meal.id)
-                    await send_animated(message, f"Прочитал этикетку: {name_ru}, {serving} г — {kcal} ккал, Б:{prot:.0f}г Ж:{fat:.0f}г У:{carbs:.0f}г")
-                    await session.commit(); return
-
-            from app.services.food_analyzer import FoodAnalyzer
-            analyzer = FoodAnalyzer()
-            if not analyzer.has_vision:
+            if not s.is_ai_configured or s.ai_provider not in ("gigachat",):
                 await message.answer("Фото сохранил, но vision-модель пока не настроена. Опиши, что там было, и я запишу.")
                 await session.commit(); return
 
-            # Vision → parse items → USDA lookup → calculator → response
-            analysis = await get_vision_provider().analyze_food_photo(str(photo_path), caption)
-            if not analysis.is_food or not analysis.parsed_items:
-                # Try label analysis as fallback — maybe it's a nutrition label without caption
-                if s.ai_provider == "gigachat" and s.gigachat_credentials:
-                    from app.providers.gigachat import GigaChatProvider
-                    gc = GigaChatProvider()
-                    label_data = await gc.analyze_label_photo(str(photo_path))
-                    if label_data.get("is_label"):
-                        # Process label data (same as label path above)
-                        kcal_l = label_data.get("kcal_per_100g", 0); prot_l = label_data.get("protein_per_100g", 0)
-                        fat_l = label_data.get("fat_per_100g", 0); carbs_l = label_data.get("carbs_per_100g", 0)
-                        serving_l = label_data.get("serving_size_g", 100)
-                        name_l = label_data.get("name_ru", "продукт с этикетки")
-                        from app.services.nutrition import apply_range
-                        cal_lo_l, cal_hi_l = apply_range(kcal_l, is_exact=True)
-                        parsed_l = [ParsedFoodItem(name_ru=name_l, name_en=name_l, grams=serving_l,
-                                    grams_confidence="high", portion_text=f"с этикетки, порция {serving_l} г",
-                                    manual_kcal=kcal_l, manual_protein_g=prot_l, manual_fat_g=fat_l, manual_carbs_g=carbs_l)]
-                        analysis_l = FA(is_food=True, meal_type=MT("snack"), items=[
-                            FI(name=name_l, portion_text=f"{serving_l} г", calories_min=cal_lo_l, calories_max=cal_hi_l,
-                               protein_min_g=prot_l*0.95, protein_max_g=prot_l*1.05,
-                               fat_min_g=fat_l*0.95, fat_max_g=fat_l*1.05,
-                               carbs_min_g=carbs_l*0.95, carbs_max_g=carbs_l*1.05, confidence=C("high"))
-                        ], total_calories_min=cal_lo_l, total_calories_max=cal_hi_l,
-                           total_protein_min_g=prot_l*0.95, total_protein_max_g=prot_l*1.05,
-                           total_fat_min_g=fat_l*0.95, total_fat_max_g=fat_l*1.05,
-                           total_carbs_min_g=carbs_l*0.95, total_carbs_max_g=carbs_l*1.05,
-                           confidence=C("high"), parsed_items=parsed_l)
-                        meal, _ = await ml.log_from_text(uid, caption or "фото этикетки", analysis_l)
-                        if meal: await ml.set_last_meal_id(uid, meal.id)
-                        await send_animated(message, f"Прочитал этикетку: {name_l}, {serving_l} г — {kcal_l} ккал, Б:{prot_l:.0f}г Ж:{fat_l:.0f}г У:{carbs_l:.0f}г")
-                        await session.commit(); return
+            from app.services.context import build_context as build_ctx
+            ctx = await build_ctx(session, uid)
+            if message.reply_to_message and message.reply_to_message.text:
+                ctx["reply_to"] = message.reply_to_message.text[:500]
 
-                await message.answer("Не похоже на еду. Я ничего не записал.")
-                await session.commit(); return
+            llm = _get_llm()
+            # Use orchestrator WITH photo — same prompt, same context, plus the image
+            if hasattr(llm, 'orchestrate_with_photo'):
+                result = await llm.orchestrate_with_photo(caption or "Что на фото?", ctx, str(photo_path))
+            else:
+                result = await llm.orchestrate(caption or "Что на фото?", ctx)
 
-            # Run nutrition pipeline for the vision-parsed items
-            from app.services.nutrition import run_nutrition_pipeline
-            fake_result = {
-                "items": [pi.model_dump() for pi in analysis.parsed_items],
-                "meal_type": analysis.meal_type.value,
-                "confidence": analysis.confidence.value,
-            }
-            items, parsed, enriched = await run_nutrition_pipeline(session, fake_result)
-            meal, _ = await ml.log_from_text(uid, caption or "фото еды", enriched)
-            if meal: await ml.set_last_meal_id(uid, meal.id)
+            action = result.get("action", "unknown")
+            logger.info(f"Photo orchestrator: action={action}")
 
-            items_str = ", ".join(it.name for it in items)
-            response = _inject_numbers(
-                f"Записал: {{ITEMS}}. {{CALORIES}} {{RANGE_NOTE}}",
-                enriched, analysis.confidence.value, items_str,
-            )
-            await send_animated(message, response)
+            error = await _dispatch_action(action, result, ctx, session, ml, uid, message.from_user.id, caption or "фото еды", message)
+            if error:
+                await message.answer("Не понял что на фото. Опиши словами!")
             await session.commit()
         except Exception as e:
             logger.error(f"Photo handler error: {e}", exc_info=True)
