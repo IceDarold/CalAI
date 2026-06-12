@@ -86,24 +86,9 @@ class MealLogger:
         if not analysis.is_food:
             return None, "Не похоже на еду. Я ничего не записал."
 
-        items_data = [
-            {"name": item.name, "portion_text": item.portion_text,
-             "calories_min": item.calories_min, "calories_max": item.calories_max,
-             "protein_min_g": item.protein_min_g, "protein_max_g": item.protein_max_g,
-             "fat_min_g": item.fat_min_g, "fat_max_g": item.fat_max_g,
-             "carbs_min_g": item.carbs_min_g, "carbs_max_g": item.carbs_max_g,
-             "confidence": conf_str(item.confidence)}
-            for item in analysis.items
-        ]
-
-        meal = await save_meal(self._session, user_id=user_id, meal_type=analysis.meal_type.value,
-                               source_type=source_type, original_text=original_text, photo_path=photo_path,
-                               calories_min=analysis.total_calories_min, calories_max=analysis.total_calories_max,
-                               protein_min_g=analysis.total_protein_min_g, protein_max_g=analysis.total_protein_max_g,
-                               fat_min_g=analysis.total_fat_min_g, fat_max_g=analysis.total_fat_max_g,
-                               carbs_min_g=analysis.total_carbs_min_g, carbs_max_g=analysis.total_carbs_max_g,
-                               confidence=conf_str(analysis.confidence), status="confirmed",
-                               items_data=items_data, eaten_at=eaten_at)
+        meal = await save_meal(self._session, user_id=user_id, analysis=analysis,
+                               source_type=source_type, original_text=original_text,
+                               photo_path=photo_path, eaten_at=eaten_at)
         return meal, ""
 
     async def append_to_meal(self, meal_id: int, text: str, analysis: FoodAnalysis) -> tuple[Meal | None, str]:

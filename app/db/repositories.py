@@ -40,64 +40,50 @@ async def get_or_create_user(
 async def save_meal(
     session: AsyncSession,
     user_id: int,
-    meal_type: str,
-    source_type: str,
-    original_text: str | None,
-    photo_path: str | None,
-    calories_min: int | None,
-    calories_max: int | None,
-    protein_min_g: float | None,
-    protein_max_g: float | None,
-    fat_min_g: float | None = None,
-    fat_max_g: float | None = None,
-    carbs_min_g: float | None = None,
-    carbs_max_g: float | None = None,
-    confidence: str = "medium",
+    analysis,  # FoodAnalysis
+    source_type: str = "text",
+    original_text: str | None = None,
+    photo_path: str | None = None,
     status: str = "confirmed",
-    items_data: list[dict] | None = None,
     eaten_at: datetime.datetime | None = None,
 ) -> Meal:
-    """Save a meal with its items."""
+    """Save a meal from FoodAnalysis. All nutrition data comes from the analysis object."""
+    from app.services.meal_logger import conf_str
+
     meal = Meal(
         user_id=user_id,
-        meal_type=meal_type,
+        meal_type=analysis.meal_type.value,
         source_type=source_type,
         original_text=original_text,
         photo_path=photo_path,
-        calories_min=calories_min,
-        calories_max=calories_max,
-        protein_min_g=protein_min_g,
-        protein_max_g=protein_max_g,
-        fat_min_g=fat_min_g,
-        fat_max_g=fat_max_g,
-        carbs_min_g=carbs_min_g,
-        carbs_max_g=carbs_max_g,
-        confidence=confidence,
+        calories_min=analysis.total_calories_min,
+        calories_max=analysis.total_calories_max,
+        protein_min_g=analysis.total_protein_min_g,
+        protein_max_g=analysis.total_protein_max_g,
+        fat_min_g=analysis.total_fat_min_g,
+        fat_max_g=analysis.total_fat_max_g,
+        carbs_min_g=analysis.total_carbs_min_g,
+        carbs_max_g=analysis.total_carbs_max_g,
+        confidence=conf_str(analysis.confidence),
         status=status,
         eaten_at=eaten_at or datetime.datetime.utcnow(),
     )
     session.add(meal)
     await session.flush()
 
-    if items_data:
-        for item_data in items_data:
-            item = MealItem(
-                meal_id=meal.id, name=item_data["name"],
-                portion_text=item_data.get("portion_text"),
-                calories_min=item_data.get("calories_min"),
-                calories_max=item_data.get("calories_max"),
-                protein_min_g=item_data.get("protein_min_g"),
-                protein_max_g=item_data.get("protein_max_g"),
-                fat_min_g=item_data.get("fat_min_g"),
-                fat_max_g=item_data.get("fat_max_g"),
-                carbs_min_g=item_data.get("carbs_min_g"),
-                carbs_max_g=item_data.get("carbs_max_g"),
-                confidence=item_data.get("confidence", "medium"),
-            )
-            session.add(item)
+    for item in analysis.items:
+        mi = MealItem(
+            meal_id=meal.id, name=item.name,
+            portion_text=item.portion_text,
+            calories_min=item.calories_min, calories_max=item.calories_max,
+            protein_min_g=item.protein_min_g, protein_max_g=item.protein_max_g,
+            fat_min_g=item.fat_min_g, fat_max_g=item.fat_max_g,
+            carbs_min_g=item.carbs_min_g, carbs_max_g=item.carbs_max_g,
+            confidence=conf_str(item.confidence),
+        )
+        session.add(mi)
 
     await session.flush()
-    # Refresh to load relationships (items) for immediate access
     await session.refresh(meal, attribute_names=["items"])
     return meal
 
