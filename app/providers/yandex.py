@@ -202,64 +202,18 @@ class YandexGPTProvider(BaseFoodTextProvider, BaseIntentProvider):
     async def orchestrate(
         self, text: str, context: dict | None = None
     ) -> dict:
-        """Single LLM call that decides everything.
-
-        Context: {all_meals, totals_today, history}
-        Each meal: {id, date, time, meal_type, items, calories, confidence}
-        """
-        parts = [f"Сообщение пользователя: {text}", ""]
-
-        if context:
-            # All meals from last 7 days
-            if context.get("all_meals"):
-                parts.append("Все приёмы пищи (последние 7 дней):")
-                current_date = None
-                for m in context["all_meals"]:
-                    if m["date"] != current_date:
-                        current_date = m["date"]
-                        parts.append(f"  📅 {current_date}:")
-                    items = ", ".join(f"{it['name']} ({it['grams']})" for it in m.get("items", []))
-                    idx_str = f"#{m['today_idx']} " if m.get("today_idx") else f"id={m['id']} "
-                    parts.append(f"    [{m['time']}] {idx_str}{m['meal_type']}: {items} — {m.get('calories', '?')}")
-                parts.append("")
-
-            # Today's totals
-            if context.get("totals_today"):
-                t = context["totals_today"]
-                parts.append(f"Итого сегодня: {t['calories']}, белок {t['protein']}")
-                parts.append("")
-
-            # History
-            if context.get("history"):
-                parts.append("История переписки:")
-                for msg in context["history"]:
-                    parts.append(f"  пользователь: {msg['text']}")
-                parts.append("")
-        else:
-            parts.append("Контекст: это первое сообщение, истории пока нет.")
-            parts.append("")
-
-        if context.get("reply_to"):
-            parts.append(f"Пользователь ОТВЕТИЛ на это сообщение бота: \"{context['reply_to'][:300]}\"")
-            parts.append("Это значит что его текущее сообщение относится именно к этому сообщению.")
-            parts.append("")
-
-        parts.append(f"Текущее время (UTC): {dt.datetime.utcnow().strftime('%Y-%m-%dT%H:%M')}")
-        parts.append("")
-
-        user_message = "\n".join(parts)
+        """Single LLM call that decides everything."""
+        from app.providers.context_format import format_context_for_llm
+        user_message = format_context_for_llm(context, text)
 
         try:
             raw = await self._call_api(ORCHESTRATOR_SYSTEM_PROMPT, user_message, json_mode=True)
             return self._parse_raw_json(raw)
         except Exception as e:
-            logger.error(f"Orchestrator failed: {e}")
+            logger.error(f"YandexGPT orchestrator failed: {e}")
             return {
-                "action": "unknown",
-                "items": [],
-                "confidence": "low",
-                "response_text": "",
-                "_error": str(e),
+                "action": "unknown", "items": [], "confidence": "low",
+                "response_text": "", "_error": str(e),
             }
 
     # ── Helpers ──────────────────────────────────────────────────────────

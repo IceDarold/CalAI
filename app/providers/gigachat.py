@@ -127,38 +127,8 @@ class GigaChatProvider(BaseFoodTextProvider, BaseIntentProvider, BaseVisionProvi
 
     async def orchestrate(self, text: str, context: dict | None = None) -> dict:
         """LLM decides everything — same interface as YandexGPT."""
-        parts = [f"Сообщение пользователя: {text}", ""]
-
-        if context:
-            if context.get("all_meals"):
-                parts.append("Все приёмы пищи (последние 7 дней):")
-                current_date = None
-                for m in context["all_meals"]:
-                    if m["date"] != current_date:
-                        current_date = m["date"]
-                        parts.append(f"  📅 {current_date}:")
-                    items = ", ".join(f"{it['name']} ({it['grams']})" for it in m.get("items", []))
-                    parts.append(f"    [{m['time']}] #{m['id']} {m['meal_type']}: {items} — {m.get('calories', '?')}")
-                parts.append("")
-
-            if context.get("totals_today"):
-                t = context["totals_today"]
-                parts.append(f"Итого сегодня: {t['calories']}, белок {t['protein']}")
-                parts.append("")
-
-            if context.get("history"):
-                parts.append("История переписки:")
-                for msg in context["history"]:
-                    parts.append(f"  пользователь: {msg['text']}")
-                parts.append("")
-        else:
-            parts.append("Контекст: это первое сообщение, истории пока нет.")
-            parts.append("")
-
-        parts.append(f"Текущее время (UTC): {dt.datetime.utcnow().strftime('%Y-%m-%dT%H:%M')}")
-        parts.append("")
-
-        user_message = "\n".join(parts)
+        from app.providers.context_format import format_context_for_llm
+        user_message = format_context_for_llm(context, text)
 
         try:
             raw = await self._chat_completion(ORCHESTRATOR_SYSTEM_PROMPT, user_message, json_mode=True)

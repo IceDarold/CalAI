@@ -197,11 +197,19 @@ async def get_totals_for_date(
             func.coalesce(func.sum(Meal.calories_max), 0).label("cal_max_total"),
             func.coalesce(func.sum(Meal.protein_min_g), 0.0).label("prot_min_total"),
             func.coalesce(func.sum(Meal.protein_max_g), 0.0).label("prot_max_total"),
+            func.coalesce(func.sum(Meal.fat_min_g), 0.0).label("fat_min_total"),
+            func.coalesce(func.sum(Meal.fat_max_g), 0.0).label("fat_max_total"),
+            func.coalesce(func.sum(Meal.carbs_min_g), 0.0).label("carbs_min_total"),
+            func.coalesce(func.sum(Meal.carbs_max_g), 0.0).label("carbs_max_total"),
             func.count(Meal.id).label("meal_count"),
         )
         .where(Meal.user_id == user_id, Meal.eaten_at >= start_utc, Meal.eaten_at < end_utc)
     )
     row = result.one()
+    return _totals_row_to_dict(row)
+
+
+def _totals_row_to_dict(row) -> dict:
     return {
         "calories_min": int(row.cal_min_total), "calories_max": int(row.cal_max_total),
         "protein_min_g": float(row.prot_min_total), "protein_max_g": float(row.prot_max_total),
