@@ -99,4 +99,8 @@ class FoodAnalyzer:
     def has_vision(self) -> bool:
         """Check if the current vision provider can actually analyze photos."""
         from app.config import settings
-        return settings.ai_provider == "openai" and bool(settings.openai_api_key)
+        if settings.ai_provider == "gigachat" and settings.gigachat_credentials:
+            return True
+        if settings.ai_provider == "openai" and settings.openai_api_key:
+            return True
+        return False
